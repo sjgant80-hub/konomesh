@@ -23,15 +23,28 @@ import { mint, fork, verifyLineage } from './lineage.mjs';
 
 export class Mesh {
   // opts: { workers[], handlers{workerId→(task)=>{content,licence?,source?}}, assess, identity,
-  //         minScore?, allow?, keyOf? }
-  constructor({ workers = [], handlers = {}, assess, identity, minScore, allow, keyOf } = {}) {
+  //         minScore?, allow?, keyOf?, store? }
+  // store (optional) — an opened konomium Vault. When present, the signed ledger is persisted
+  // ENCRYPTED after every round and can be reloaded with loadLedger(), so the mesh's output history
+  // survives a restart without the plaintext ever touching disk.
+  constructor({ workers = [], handlers = {}, assess, identity, minScore, allow, keyOf, store } = {}) {
     if (!identity || !identity.keyPair) throw new Error('Mesh requires a signing identity (from generateIdentity())');
     this.swarm = new Swarm(workers);
     this.handlers = handlers;
     this.sieve = new Sieve({ assess, minScore, allow });
     this.identity = identity;
     this.keyOf = keyOf || (t => t.key ?? t.id ?? String(t));
+    this.store = store || null;
     this.ledger = [];   // the growing Ed25519 provenance chain of accepted artifacts
+  }
+
+  static LEDGER_KEY = 'konomesh-ledger';
+
+  // Reload a previously-persisted ledger from the encrypted store (call after constructing with the
+  // same store + identity to resume where a prior run left off).
+  async loadLedger() {
+    if (this.store) { const saved = await this.store.get(Mesh.LEDGER_KEY); if (Array.isArray(saved)) this.ledger = saved; }
+    return this.ledger;
   }
 
   // Run a batch of tasks through the whole tract. Returns what was produced, kept, rejected, flagged,
@@ -61,6 +74,9 @@ export class Mesh {
       this.ledger.push(entry);
       signedThisRound.push(entry);
     }
+
+    // persist the ledger encrypted-at-rest if a store was provided
+    if (this.store && signedThisRound.length) await this.store.put(Mesh.LEDGER_KEY, this.ledger);
 
     return {
       produced,

@@ -37,6 +37,21 @@ await mesh.verify();                          // the whole output ledger is one 
 mesh.contribution();                          // per-worker share of what got KEPT
 ```
 
+### Persistent, encrypted ledger (optional)
+
+Pass an opened [konomium-vault](https://sjgant80-hub.github.io/konomium-vault/) `Vault` as `store` and
+the signed ledger is persisted **AES-GCM encrypted** after every round — the mesh's output history
+survives a restart without the plaintext ever touching disk:
+
+```js
+import { Vault } from './vault.mjs';
+const store = await new Vault().open('your master seed');
+const mesh  = new Mesh({ ...opts, store });
+await mesh.metabolize(tasks);   // ledger auto-saved, encrypted
+// …after a restart, on a fresh Mesh with the same store + identity:
+await mesh.loadLedger();        // resumes the same verifiable chain
+```
+
 ## Test
 
 ```
