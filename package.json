@@ -1,0 +1,10 @@
+{
+  "name": "konomesh",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "mesh.mjs",
+  "scripts": {
+    "test": "node --test mesh.test.mjs swarm.test.mjs sieve.test.mjs lineage.test.mjs"
+  },
+  "license": "MIT"
+}

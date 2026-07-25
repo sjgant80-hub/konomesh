@@ -1,0 +1,96 @@
+#!/usr/bin/env node
+// Real Ed25519 against the Web Crypto engine — no mocked crypto. The load-bearing tests: a tampered
+// record, a forged signature, and a broken parent link are all caught by verifyLineage.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { generateIdentity, mint, fork, verifyRecord, verifyLineage, sha256Hex } from './lineage.mjs';
+
+test('an identity has a 32-byte (64-hex) public key and a usable private key', async () => {
+  const id = await generateIdentity();
+  assert.match(id.pub, /^[0-9a-f]{64}$/);
+  assert.ok(id.keyPair.privateKey);
+});
+
+test('a minted root record verifies', async () => {
+  const alice = await generateIdentity();
+  const root = await mint('the original build', alice);
+  assert.equal(root.seq, 0);
+  assert.equal(root.parent, null);
+  assert.equal(root.author, alice.pub);
+  assert.equal((await verifyRecord(root)).valid, true);
+});
+
+test('a fork chain of three authors verifies end to end', async () => {
+  const a = await generateIdentity(), b = await generateIdentity(), c = await generateIdentity();
+  const r0 = await mint('v1', a);
+  const r1 = await fork(r0, 'v2 — b improved it', b);
+  const r2 = await fork(r1, 'v3 — c improved it', c);
+  const v = await verifyLineage([r0, r1, r2]);
+  assert.equal(v.valid, true);
+  assert.equal(v.depth, 3);
+  assert.equal(v.root, r0.id);
+  assert.equal(v.tip, r2.id);
+  assert.equal(v.authors.length, 3);
+});
+
+test('TAMPER: altering a record’s content breaks its id and fails verification', async () => {
+  const a = await generateIdentity();
+  const root = await mint('honest content', a);
+  const forged = { ...root, contentHash: await sha256Hex('swapped content') };
+  const v = await verifyRecord(forged);
+  assert.equal(v.valid, false);
+  assert.match(v.reason, /tampered|signature/);
+});
+
+test('FORGE: claiming someone else’s authorship fails the signature check', async () => {
+  const a = await generateIdentity(), b = await generateIdentity();
+  const root = await mint('content', a);
+  // attacker keeps a's signature but swaps the author field to b — sig no longer matches
+  const forged = { ...root, author: b.pub };
+  const rebuiltId = await sha256Hex(JSON.stringify({ contentHash: forged.contentHash, author: forged.author, parent: forged.parent, seq: forged.seq }) + forged.sig);
+  forged.id = rebuiltId; // even fixing the id, the signature can't verify against b
+  const v = await verifyRecord(forged);
+  assert.equal(v.valid, false);
+  assert.match(v.reason, /signature does not verify/);
+});
+
+test('BROKEN LINK: a fork pointing at the wrong parent is caught', async () => {
+  const a = await generateIdentity(), b = await generateIdentity();
+  const r0 = await mint('v1', a);
+  const rogue = await mint('unrelated', b);      // not part of the chain
+  const r1 = await fork(rogue, 'v2', b);          // validly signed, but parent isn't r0
+  const v = await verifyLineage([r0, r1]);
+  assert.equal(v.valid, false);
+  assert.ok(v.breaks.some(x => /parent link broken/.test(x.reason)));
+});
+
+test('SEQ: a chain whose seq does not increment is rejected', async () => {
+  const a = await generateIdentity();
+  const r0 = await mint('v1', a);
+  const bad = { ...r0, seq: 5 };
+  const v = await verifyLineage([bad]);
+  assert.equal(v.valid, false);
+  assert.ok(v.breaks.some(x => /root seq must be 0|tampered/.test(x.reason)));
+});
+
+test('content-address is split from provenance: same content, different lineages', async () => {
+  const a = await generateIdentity(), b = await generateIdentity();
+  const ra = await mint('identical bytes', a);
+  const rb = await mint('identical bytes', b);
+  assert.equal(ra.contentHash, rb.contentHash, 'same content → same contentHash');
+  assert.notEqual(ra.id, rb.id, 'but different provenance records');
+  assert.notEqual(ra.author, rb.author);
+});
+
+test('an empty chain is invalid, not silently accepted', async () => {
+  const v = await verifyLineage([]);
+  assert.equal(v.valid, false);
+});
+
+test('verification is stable — re-verifying a good chain stays valid', async () => {
+  const a = await generateIdentity();
+  const chain = [await mint('x', a)];
+  chain.push(await fork(chain[0], 'y', a));
+  assert.equal((await verifyLineage(chain)).valid, true);
+  assert.equal((await verifyLineage(chain)).valid, true);
+});

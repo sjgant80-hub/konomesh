@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>konomesh · the HERD economy</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0a0f;--surface:#15161f;--border:#2a2c3a;--text:#e6e7ee;--dim:#9296a6;--ok:#4caf50;--rej:#e05a4d;--flag:#f0c040;--accent:#6c8cff;font-family:system-ui,-apple-system,sans-serif}
+body{background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:1.5rem}
+.wrap{width:100%;max-width:42rem}
+h1{font-size:1.5rem}.sub{color:var(--dim);font-size:.9rem;margin-bottom:1rem}
+.flow{display:flex;justify-content:space-between;font-size:.72rem;color:var(--dim);font-family:ui-monospace,monospace;margin-bottom:1rem}
+.flow span b{color:var(--accent)}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:.6rem;padding:1.1rem;margin-bottom:1rem}
+button{padding:.5rem .9rem;background:transparent;border:1px solid var(--border);color:var(--text);border-radius:.4rem;cursor:pointer;font-size:.85rem;margin-right:.4rem}
+button.go{border-color:var(--accent);color:var(--accent)}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:.5rem;margin-top:.6rem;text-align:center}
+.stat{background:var(--bg);border:1px solid var(--border);border-radius:.4rem;padding:.5rem}
+.stat .n{font-size:1.3rem;font-weight:700}.stat .l{font-size:.66rem;color:var(--dim);text-transform:uppercase}
+.kept .n{color:var(--ok)}.rej .n{color:var(--rej)}.flag .n{color:var(--flag)}
+#verdict{margin-top:.7rem;font-weight:700}.valid{color:var(--ok)}.invalid{color:var(--rej)}
+.ledger{font-family:ui-monospace,monospace;font-size:.7rem;color:var(--dim);margin-top:.5rem;max-height:8rem;overflow:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>konomesh</h1>
+  <p class="sub">Work in → routed, done, quality+licence-gated, signed into one verifiable ledger. No central coordinator.</p>
+  <div class="flow"><span><b>ROUTE</b> fallherd</span><span>→ <b>WORK</b> body</span><span>→ <b>GATE</b> fallsieve</span><span>→ <b>SIGN</b> fallineage</span></div>
+  <div class="card">
+    <button class="go" onclick="run(1)">Metabolise 30 tasks (mixed quality)</button>
+    <button onclick="run(2)">+ another round</button>
+    <div class="stats" id="stats"></div>
+    <div id="verdict"></div>
+    <div class="ledger" id="ledger"></div>
+  </div>
+</div>
+<script type="module">
+import { Mesh } from './mesh.mjs';
+import { generateIdentity } from './lineage.mjs';
+
+const assess = c => { const L = String(c.content).split('\n').filter(Boolean); const bad = L.filter(l=>/TODO/.test(l)).length; return { score: L.length ? 1-bad/L.length : 0 }; };
+// a worker whose output quality + licence varies by task index, so we see keep/reject/flag
+function handler(t){
+  const i = Number(String(t.key).replace(/\D/g,'')) || 0;
+  if (i % 5 === 0) return { content: `TODO\nTODO\nstub for ${t.key}`, licence:'MIT' };        // low quality → reject
+  if (i % 5 === 1) return { content: `solid work for ${t.key}\nclean`, licence:'GPL-3.0' };    // good but copyleft → flag
+  return { content: `solid work for ${t.key}\nclean\nshipped`, licence:'MIT' };                // keep
+}
+let mesh = null;
+async function ensure(){ if(!mesh){ mesh = new Mesh({ workers:['w0','w1','w2','w3'], handlers:{w0:handler,w1:handler,w2:handler,w3:handler}, assess, identity: await generateIdentity(), minScore:0.7 }); } }
+
+window.run = async (round) => {
+  await ensure();
+  const base = round===1 ? '' : '-r'+round;
+  const tasks = Array.from({length:30},(_,i)=>({key:`job-${i}${base}`}));
+  const r = await mesh.metabolize(tasks);
+  const s = r.summary;
+  document.getElementById('stats').innerHTML =
+    `<div class="stat"><div class="n">${s.produced}</div><div class="l">produced</div></div>`+
+    `<div class="stat kept"><div class="n">${s.kept}</div><div class="l">kept+signed</div></div>`+
+    `<div class="stat rej"><div class="n">${s.rejected}</div><div class="l">rejected</div></div>`+
+    `<div class="stat flag"><div class="n">${s.flagged}</div><div class="l">flagged</div></div>`;
+  const v = await mesh.verify();
+  const vd = document.getElementById('verdict');
+  vd.textContent = v.valid ? `✓ ledger verifies · depth ${v.depth} · ${Object.keys(mesh.contribution()).length} workers contributed` : '✗ ledger broken';
+  vd.className = v.valid ? 'valid' : 'invalid';
+  document.getElementById('ledger').innerHTML = mesh.ledger.slice(-8).map(e=>`seq ${e.seq} · ${e.worker} · ${e.artifact} · id ${e.id.slice(0,10)}…`).join('<br>');
+};
+</script>
+</body>
+</html>
