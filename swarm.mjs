@@ -1,20 +1,25 @@
 // ════════════════════════════════════════════════════════════════
-// fallswarm · a load-balancer-free work-distribution runtime
+// fallherd · a load-balancer-free work-distribution runtime
 //
 // Every worker computes its OWN slice of the work — there is no central router, no coordinator, no
-// load balancer. Workers are placed on a unit ring by the golden-ratio low-discrepancy sequence
-// (the same additive recurrence that gives a sunflower its 137.5° seed spacing): worker i sits at
-// frac(i · φ⁻¹). That sequence is the most uniform placement of N points for ANY N, so:
+// load balancer. Routing is IDENTITY-DERIVED consistent hashing: each worker places V virtual nodes
+// on the unit ring at hash(`id#v`), and a key goes to the first virtual node at-or-after the key's
+// hash (wrapping). Because a worker's positions come from its IDENTITY (not its enrolment order or
+// history), two nodes that know the same membership route every key the same way — the property a
+// decentralised mesh actually needs. Virtual nodes smooth the arc lengths so no worker is a hot spot,
+// and add/remove only reshuffles the arcs the changed worker owned (~1/N of keys).
 //
-//   • load is even — keys hash onto the ring and go to the nearest worker, and the workers are
-//     maximally spread, so no worker is a hot spot;
-//   • it is consistent-hashing stable — adding or removing a worker only reshuffles the one arc that
-//     changes hands, not the whole assignment;
-//   • it is decentralised — a worker needs only its own index and the worker count to know its arc;
-//     no node has to be told what to do by a central authority.
+//   • decentralised — position is a pure function of the worker id; replicas agree with no consensus.
+//   • balanced — V virtual nodes per worker keep the max/min load ratio tight (a single node per
+//     worker leaves large gaps; virtual nodes are the standard fix).
+//   • consistent — add/remove moves only the changed worker's keys.
+//
+// (The golden angle / sunflower placement is kept in `vogelPoint()` for VISUALISATION only — it is a
+// pretty even layout, but it is NOT the routing mechanism, because index-order placement can't give
+// replicas agreement. Routing is the hashed virtual-node ring above.)
 //
 // `dispatch()` turns the router into a runtime: it routes each task to its worker's handler and
-// collects the results — the swarm metabolising a queue of work. Zero dependencies, deterministic.
+// collects the results — the herd metabolising a queue of work. Zero dependencies, deterministic.
 // ════════════════════════════════════════════════════════════════
 
 export const PHI = (1 + Math.sqrt(5)) / 2;      // 1.6180339887…
@@ -31,46 +36,47 @@ export function vogelPoint(i) {
   return { i, ring, angle, r, x: r * Math.cos(angle * Math.PI / 180), y: r * Math.sin(angle * Math.PI / 180) };
 }
 
-// Deterministic string → [0,1) hash (FNV-1a 32-bit, mapped to the unit interval). No dependencies.
+// Deterministic string → [0,1) hash: FNV-1a 32-bit, then a MurmurHash3 fmix32 avalanche so the bits
+// are well spread (plain FNV-1a clusters badly on `id#v` keys, wrecking the ring balance). No deps.
 export function hashKey(key) {
   const s = String(key);
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  // fmix32 finalizer — avalanche the accumulated state into a uniform 32-bit value
+  h ^= h >>> 16; h = Math.imul(h, 0x85ebca6b); h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35); h ^= h >>> 16;
   return ((h >>> 0) / 0x100000000);
 }
 
-// The decentralised router. Workers are ordered by their ring position; a key goes to the worker
-// whose position is the nearest one at-or-before it on the ring (wrapping around) — a golden-ratio
-// consistent-hash ring.
+export const VNODES = 160;  // virtual nodes per worker — smooths arc lengths so load stays balanced
+
+// The decentralised router. Each worker owns V virtual nodes at hash('id#v'); a key goes to the first
+// virtual node at-or-after the key's hash on the ring (wrapping). Positions derive from IDENTITY, so
+// the ring is a pure function of the membership set — replicas agree, order and history are irrelevant.
 export class Swarm {
   constructor(workerIds = []) {
-    this._idx = new Map();   // worker id → its STABLE golden index (assigned once, never reshuffled)
-    this._next = 0;
     this.workers = [];
     this.setWorkers(workerIds);
   }
 
-  // Each worker keeps the ring position of its ENROLMENT index for life. Removing a worker never
-  // shifts anyone else's position (the golden-ratio sequence stays well-spread even with gaps), which
-  // is what makes the ring consistent-hashing stable.
-  _slot(id) { if (!this._idx.has(id)) this._idx.set(id, this._next++); return this._idx.get(id); }
-
   _rebuild() {
-    this.ring = this.workers
-      .map(id => ({ id, pos: frac(this._slot(id) * PHI_INV) }))
-      .sort((a, b) => a.pos - b.pos);
+    const ring = [];
+    for (const id of this.workers) for (let v = 0; v < VNODES; v++) ring.push({ id, pos: hashKey(`${id}#${v}`) });
+    // sort by position; a stable id tie-break keeps the ring identical across replicas on hash ties
+    this.ring = ring.sort((a, b) => a.pos - b.pos || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   }
 
-  setWorkers(workerIds) { this.workers = [...workerIds]; for (const id of this.workers) this._slot(id); this._rebuild(); return this; }
+  setWorkers(workerIds) { this.workers = [...new Set(workerIds)]; this._rebuild(); return this; }
 
   get size() { return this.workers.length; }
 
-  // Which worker owns this key? The first ring node at-or-after the key's hash, wrapping around.
+  // Which worker owns this key? The first virtual node at-or-after the key's hash, wrapping around.
   route(key) {
     if (this.ring.length === 0) return null;
     const h = hashKey(key);
-    for (const node of this.ring) if (node.pos >= h) return node.id;
-    return this.ring[0].id; // wrap
+    // binary search for the first ring node with pos >= h
+    let lo = 0, hi = this.ring.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (this.ring[mid].pos >= h) hi = mid; else lo = mid + 1; }
+    return this.ring[lo % this.ring.length].id; // wrap
   }
 
   add(id) { if (!this.workers.includes(id)) { this.workers.push(id); this._rebuild(); } return this; }

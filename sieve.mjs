@@ -31,8 +31,13 @@ export function classifyLicence(licence) {
 }
 
 // FNV-1a 32-bit content address (hex). Deterministic, zero-dep. Identical content ⇒ identical id.
+// Objects are canonically JSON-serialised (not String()'d to "[object Object]", which would make every
+// distinct object collide on one address); strings are hashed as-is.
 export function contentHash(content) {
-  const s = String(content == null ? '' : content);
+  const s = content == null ? ''
+    : typeof content === 'string' ? content
+    : typeof content === 'object' ? JSON.stringify(content)
+    : String(content);
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
   return (h >>> 0).toString(16).padStart(8, '0');
@@ -47,6 +52,10 @@ export class Sieve {
   // assess: (candidate) => { score:Number } | Number. Required — the sieve computes no verdict itself.
   constructor({ assess, minScore = DEFAULTS.minScore, allow = DEFAULTS.allow } = {}) {
     if (typeof assess !== 'function') throw new Error('Sieve requires an injected assess(candidate) function');
+    // A non-finite threshold (null / '' / NaN / a stray string from config) would make every
+    // `score < minScore` comparison false and silently admit ALL candidates — a gate that isn't a
+    // gate. Fail loud instead: an invalid threshold is a configuration error, not a pass-everything.
+    if (!Number.isFinite(minScore)) throw new Error('Sieve minScore must be a finite number');
     this.assess = assess;
     this.minScore = minScore;
     this.allow = new Set(allow);
@@ -57,12 +66,17 @@ export class Sieve {
   //   rejected — failed the quality gate.
   //   flagged  — passed quality but its licence is not auto-admissible (needs a human decision).
   async sift(candidates = []) {
-    const kept = [], rejected = [], flagged = [];
+    const kept = [], rejected = [], flagged = [], errored = [];
     const seen = new Set();
 
-    for (const c of candidates) {
+    for (const c of (candidates || [])) {
+      if (c == null || typeof c !== 'object') { errored.push({ candidate: c, reason: 'candidate is not an object' }); continue; }
       const hash = contentHash(c.content);
-      const raw = await this.assess(c);
+      // per-candidate isolation: a throwing assessor drops THIS candidate, it does not abort the batch
+      // and discard everyone already processed.
+      let raw;
+      try { raw = await this.assess(c); }
+      catch (e) { errored.push({ id: c.id || hash, hash, source: c.source || null, reason: `assessor threw: ${e && e.message || e}` }); continue; }
       const score = typeof raw === 'number' ? raw : Number(raw && raw.score);
       const licenceClass = classifyLicence(c.licence);
       const record = {
@@ -82,8 +96,8 @@ export class Sieve {
     }
 
     return {
-      kept, rejected, flagged,
-      summary: { in: candidates.length, kept: kept.length, rejected: rejected.length, flagged: flagged.length },
+      kept, rejected, flagged, errored,
+      summary: { in: (candidates || []).length, kept: kept.length, rejected: rejected.length, flagged: flagged.length, errored: errored.length },
     };
   }
 }

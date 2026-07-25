@@ -59,6 +59,18 @@ test('a bad-licence output is flagged, not signed — even if high quality', asy
   assert.equal(mesh.ledger.length, 0);
 });
 
+test('ATTRIBUTION is signed — forging worker/artifact now breaks verification', async () => {
+  const handlers = { w0: t => ({ content: `ok ${t.key}\nx`, licence: 'MIT' }), w1: t => ({ content: `ok ${t.key}\nx`, licence: 'MIT' }), w2: t => ({ content: `ok ${t.key}\nx`, licence: 'MIT' }) };
+  const mesh = await mkMesh(handlers);
+  await mesh.metabolize(tasks(8));
+  assert.equal((await mesh.verify()).valid, true);
+  // re-attribute every unit to a forged worker (the old bug: this passed verify + fabricated contribution)
+  for (const e of mesh.ledger) { e.worker = 'w0'; e.artifact = 'w0:forged'; }
+  const v = await mesh.verify();
+  assert.equal(v.valid, false, 'the forged attribution no longer verifies');
+  assert.ok(v.breaks.some(b => /attribution/.test(b.reason)));
+});
+
 test('the signed ledger is tamper-evident — altering an entry breaks verification', async () => {
   const handlers = { w0: t => ({ content: `ok ${t.key}\nx`, licence: 'MIT' }), w1: t => ({ content: `ok ${t.key}\nx`, licence: 'MIT' }), w2: t => ({ content: `ok ${t.key}\nx`, licence: 'MIT' }) };
   const mesh = await mkMesh(handlers);

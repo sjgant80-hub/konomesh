@@ -64,13 +64,29 @@ test('BROKEN LINK: a fork pointing at the wrong parent is caught', async () => {
   assert.ok(v.breaks.some(x => /parent link broken/.test(x.reason)));
 });
 
-test('SEQ: a chain whose seq does not increment is rejected', async () => {
+test('SEQ (multi-record): a fork whose seq does not increment by 1 is caught', async () => {
   const a = await generateIdentity();
   const r0 = await mint('v1', a);
-  const bad = { ...r0, seq: 5 };
-  const v = await verifyLineage([bad]);
+  const r1 = await fork(r0, 'v2', a);           // valid seq 1
+  const v = await verifyLineage([r0, r1, r1]);  // third has seq 1, should be 2 relative to its parent
   assert.equal(v.valid, false);
-  assert.ok(v.breaks.some(x => /root seq must be 0|tampered/.test(x.reason)));
+  assert.ok(v.breaks.some(x => /seq does not increment/.test(x.reason)), 'the multi-record seq check fired');
+});
+
+test('a null/undefined chain element returns invalid — never throws', async () => {
+  const a = await generateIdentity();
+  const r0 = await mint('v1', a);
+  const v = await verifyLineage([r0, null, undefined]);
+  assert.equal(v.valid, false);
+  assert.ok(v.breaks.some(x => /not a record/.test(x.reason)));
+});
+
+test('a record with sig / author omitted returns invalid — never throws', async () => {
+  const a = await generateIdentity();
+  const r0 = await mint('v1', a);
+  const { sig, ...noSig } = r0;
+  assert.equal((await verifyRecord(noSig)).valid, false, 'missing sig → invalid, not a crash');
+  assert.equal((await verifyRecord({ ...r0, author: 'zz' })).valid, false, 'malformed author → invalid');
 });
 
 test('content-address is split from provenance: same content, different lineages', async () => {

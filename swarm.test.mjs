@@ -33,16 +33,26 @@ test('routing is deterministic — same key, same worker', () => {
   assert.equal(s.route('task-42'), s.route('task-42'));
 });
 
-test('load is balanced across workers (no hot spot)', () => {
-  const nWorkers = 8, nKeys = 8000;
-  const s = new Swarm(Array.from({ length: nWorkers }, (_, i) => `w${i}`));
-  const dist = s.distribution(keys(nKeys));
-  const counts = Object.values(dist);
-  const expected = nKeys / nWorkers;
-  for (const c of counts) {
-    assert.ok(c > expected * 0.55 && c < expected * 1.45, `worker got ${c}, expected ~${expected} — within balance`);
+test('load is balanced across workers at MANY worker counts (not a cherry-picked N)', () => {
+  const nKeys = 12000;
+  for (const nWorkers of [3, 5, 7, 11, 16, 23]) {
+    const s = new Swarm(Array.from({ length: nWorkers }, (_, i) => `w${i}`));
+    const counts = Object.values(s.distribution(keys(nKeys)));
+    const max = Math.max(...counts), min = Math.min(...counts);
+    // 64 virtual nodes per worker keep the max/min load ratio modest for EVERY N
+    assert.ok(max / min < 1.9, `N=${nWorkers}: max/min load ratio ${(max / min).toFixed(2)} should stay < 1.9`);
+    assert.equal(counts.reduce((a, b) => a + b, 0), nKeys, 'every key routed exactly once');
   }
-  assert.equal(counts.reduce((a, b) => a + b, 0), nKeys, 'every key routed exactly once');
+});
+
+test('DECENTRALISED: same membership routes identically regardless of order or history', () => {
+  const ks = keys(5000);
+  const a = new Swarm(['w0', 'w1', 'w2', 'w3', 'w4']);
+  const b = new Swarm(['w4', 'w3', 'w2', 'w1', 'w0']);           // different construction order
+  assert.equal(ks.filter(k => a.route(k) !== b.route(k)).length, 0, 'construction order must not change routing');
+  const c = new Swarm(['w0', 'w1']).add('w2').add('w3');
+  const d = new Swarm(['w3', 'w2', 'w1', 'w0', 'wX']).remove('wX'); // different history, same members
+  assert.equal(ks.filter(k => c.route(k) !== d.route(k)).length, 0, 'position is a function of identity only');
 });
 
 test('consistent hashing — adding a worker only reshuffles a small share of keys', () => {

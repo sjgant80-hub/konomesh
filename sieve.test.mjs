@@ -71,14 +71,46 @@ test('identical content dedupes among survivors', async () => {
   assert.equal(r.kept.length, 1, 'same content → one survivor');
 });
 
-test('summary counts reconcile to the input', async () => {
+test('summary counts reconcile to the input — including deduped survivors', async () => {
   const s = new Sieve({ assess, minScore: 0.7 });
   const r = await s.sift([
     { content: 'clean\ncode', licence: 'MIT' },      // kept
+    { content: 'clean\ncode', licence: 'ISC' },      // dedup of the above (same content) → not counted again
     { content: 'TODO\nx', licence: 'MIT' },           // rejected
     { content: 'clean\ncode2', licence: 'GPL-3.0' },  // flagged
   ]);
-  assert.deepEqual(r.summary, { in: 3, kept: 1, rejected: 1, flagged: 1 });
+  // the reconciliation invariant: kept(unique) + rejected + flagged + errored + dedup-collapsed == in
+  const dedup = r.summary.in - (r.summary.kept + r.summary.rejected + r.summary.flagged + r.summary.errored);
+  assert.equal(dedup, 1, 'exactly one input collapsed as a duplicate');
+  assert.equal(r.summary.kept, 1);
+  assert.equal(r.summary.rejected, 1);
+  assert.equal(r.summary.flagged, 1);
+});
+
+test('a non-finite minScore is rejected loudly — a null threshold must NOT disable the gate', () => {
+  for (const bad of [null, NaN, '', 'high']) {
+    assert.throws(() => new Sieve({ assess, minScore: bad }), /finite number/, `minScore ${JSON.stringify(bad)} rejected`);
+  }
+});
+
+test('a throwing assessor drops only that candidate — the batch is not aborted', async () => {
+  let n = 0;
+  const flaky = () => { n++; if (n === 2) throw new Error('boom'); return { score: 1 }; };
+  const s = new Sieve({ assess: flaky, minScore: 0.5 });
+  const r = await s.sift([{ content: 'a', licence: 'MIT' }, { content: 'b', licence: 'MIT' }, { content: 'c', licence: 'MIT' }]);
+  assert.equal(r.kept.length, 2, 'the two good candidates survive');
+  assert.equal(r.errored.length, 1, 'the throwing one is reported, not silently lost');
+  assert.match(r.errored[0].reason, /threw/);
+});
+
+test('distinct OBJECT contents get distinct addresses (no [object Object] collapse)', async () => {
+  const s = new Sieve({ assess: () => ({ score: 1 }), minScore: 0.5 });
+  const r = await s.sift([
+    { content: { a: 1 }, licence: 'MIT' },
+    { content: { a: 2 }, licence: 'MIT' },
+  ]);
+  assert.equal(r.kept.length, 2, 'two different objects are two different survivors');
+  assert.notEqual(r.kept[0].hash, r.kept[1].hash);
 });
 
 test('cluster groups records that share content', () => {

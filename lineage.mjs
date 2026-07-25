@@ -24,6 +24,8 @@ const ENC = new TextEncoder();
 
 const hexOf = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
 const bytesOf = hex => { const u = new Uint8Array(hex.length / 2); for (let i = 0; i < u.length; i++) u[i] = parseInt(hex.substr(i * 2, 2), 16); return u; };
+// A well-formed hex string of an exact length (Ed25519 sig = 128 hex chars, raw pubkey = 64).
+const isHex = (s, len) => typeof s === 'string' && s.length === len && /^[0-9a-f]+$/i.test(s);
 
 export async function sha256Hex(str) {
   return hexOf(await subtle.digest('SHA-256', ENC.encode(String(str))));
@@ -37,6 +39,10 @@ export async function generateIdentity() {
 }
 
 // The canonical bytes a record's signature covers — the provenance claim, without the sig or id.
+// The signature and id cover EXACTLY these four fields. Any extra field a caller attaches to a record
+// (e.g. a label) is NOT signed or content-addressed — if it must be tamper-evident, fold it into the
+// `content` before minting so it lands inside contentHash. verifyRecord confirms these four are
+// intact; it does not, and cannot, vouch for fields outside them.
 function canon(r) {
   return JSON.stringify({ contentHash: r.contentHash, author: r.author, parent: r.parent, seq: r.seq });
 }
@@ -63,12 +69,20 @@ export async function fork(parent, content, identity) {
 // and the signature must verify against the author's public key.
 export async function verifyRecord(rec) {
   if (!rec || typeof rec !== 'object') return { valid: false, reason: 'not a record' };
+  // A malformed record (missing/short sig, author, or id) must return invalid — NOT throw. These are
+  // publicly-constructible values, so a caller feeding a forged/partial record must get a clean false,
+  // not a crash, from the main entry point.
+  if (!isHex(rec.sig, 128) || !isHex(rec.author, 64) || typeof rec.id !== 'string') {
+    return { valid: false, reason: 'record is missing a well-formed sig / author / id' };
+  }
   const expectId = await sha256Hex(canon(rec) + rec.sig);
   if (expectId !== rec.id) return { valid: false, reason: 'record id does not match its contents — tampered' };
   let pub;
   try { pub = await subtle.importKey('raw', bytesOf(rec.author), { name: 'Ed25519' }, false, ['verify']); }
   catch { return { valid: false, reason: 'author public key is malformed' }; }
-  const ok = await subtle.verify({ name: 'Ed25519' }, pub, bytesOf(rec.sig), ENC.encode(canon(rec)));
+  let ok;
+  try { ok = await subtle.verify({ name: 'Ed25519' }, pub, bytesOf(rec.sig), ENC.encode(canon(rec))); }
+  catch { return { valid: false, reason: 'signature is malformed' }; }
   return ok ? { valid: true } : { valid: false, reason: 'signature does not verify against the author key' };
 }
 
@@ -81,22 +95,28 @@ export async function verifyLineage(chain) {
     const rec = chain[i];
     const v = await verifyRecord(rec);
     if (!v.valid) breaks.push({ seq: rec && rec.seq, id: rec && rec.id, reason: v.reason });
+    // a null/non-object element is reported, and we skip the link checks that would dereference it
+    if (!rec || typeof rec !== 'object') { breaks.push({ index: i, reason: 'chain element is not a record' }); continue; }
 
     if (i === 0) {
       if (rec.parent !== null) breaks.push({ seq: rec.seq, reason: 'root must have a null parent' });
       if (rec.seq !== 0) breaks.push({ seq: rec.seq, reason: 'root seq must be 0' });
     } else {
-      if (rec.parent !== chain[i - 1].id) breaks.push({ seq: rec.seq, reason: `parent link broken — points at ${rec.parent}, previous record is ${chain[i - 1].id}` });
-      if (rec.seq !== chain[i - 1].seq + 1) breaks.push({ seq: rec.seq, reason: 'seq does not increment by 1' });
+      const prev = chain[i - 1];
+      if (!prev || typeof prev !== 'object') breaks.push({ seq: rec.seq, reason: 'previous chain element is not a record' });
+      else {
+        if (rec.parent !== prev.id) breaks.push({ seq: rec.seq, reason: `parent link broken — points at ${rec.parent}, previous record is ${prev.id}` });
+        if (rec.seq !== prev.seq + 1) breaks.push({ seq: rec.seq, reason: 'seq does not increment by 1' });
+      }
     }
   }
 
   return {
     valid: breaks.length === 0,
     depth: chain.length,
-    root: chain[0].id,
-    tip: chain[chain.length - 1].id,
-    authors: [...new Set(chain.map(r => r.author))],
+    root: chain[0] && chain[0].id || null,
+    tip: chain[chain.length - 1] && chain[chain.length - 1].id || null,
+    authors: [...new Set(chain.filter(r => r && r.author).map(r => r.author))],
     breaks,
   };
 }

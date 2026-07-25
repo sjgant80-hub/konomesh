@@ -19,7 +19,13 @@
 
 import { Swarm, dispatch } from './swarm.mjs';
 import { Sieve } from './sieve.mjs';
-import { mint, fork, verifyLineage } from './lineage.mjs';
+import { mint, fork, verifyLineage, sha256Hex } from './lineage.mjs';
+
+// Canonical serialisation so object artifacts don't all collapse to "[object Object]" when hashed.
+const ser = v => (typeof v === 'string' ? v : JSON.stringify(v ?? null));
+// The exact bytes signed for a ledger entry's attribution — one definition, used by both sign + verify
+// so the key order can never drift between them.
+const attribCanon = (worker, artifact, payloadHash) => JSON.stringify({ worker, artifact, payloadHash });
 
 export class Mesh {
   // opts: { workers[], handlers{workerId→(task)=>{content,licence?,source?}}, assess, identity,
@@ -64,13 +70,18 @@ export class Mesh {
       }));
     const sifted = await this.sieve.sift(candidates);
 
-    // 4 · sign each survivor onto the single provenance chain (append-only, tamper-evident).
+    // 4 · sign each survivor onto the single provenance chain (append-only, tamper-evident). The
+    // SIGNED content binds the attribution (worker + artifact + payload hash), so none of those can be
+    // rewritten without breaking the signature — fixing the earlier hole where worker/artifact lived
+    // outside the signed canon and contribution() could be fabricated.
     const signedThisRound = [];
     for (const kept of sifted.kept) {
+      const payloadHash = await sha256Hex(ser(kept.content));
+      const signed = attribCanon(kept.source, kept.id, payloadHash);
       const rec = this.ledger.length === 0
-        ? await mint(kept.content, this.identity)
-        : await fork(this.ledger[this.ledger.length - 1], kept.content, this.identity);
-      const entry = { ...rec, worker: kept.source, artifact: kept.id };
+        ? await mint(signed, this.identity)
+        : await fork(this.ledger[this.ledger.length - 1], signed, this.identity);
+      const entry = { ...rec, worker: kept.source, artifact: kept.id, payloadHash };
       this.ledger.push(entry);
       signedThisRound.push(entry);
     }
@@ -95,8 +106,20 @@ export class Mesh {
     };
   }
 
-  // Verify the whole output history — the mesh's ledger is one Ed25519 chain.
-  async verify() { return verifyLineage(this.ledger); }
+  // Verify the whole output history: the Ed25519 chain (via lineage) AND that each entry's attribution
+  // (worker / artifact / payloadHash) reproduces its SIGNED contentHash — so tampering with the
+  // attribution fields is caught even though they sit outside lineage's own canon.
+  async verify() {
+    const v = await verifyLineage(this.ledger);
+    if (!v.valid) return v;
+    for (const e of this.ledger) {
+      const expect = await sha256Hex(attribCanon(e.worker, e.artifact, e.payloadHash));
+      if (expect !== e.contentHash) {
+        return { ...v, valid: false, breaks: [...(v.breaks || []), { seq: e.seq, reason: 'worker/artifact attribution does not match the signed contentHash — tampered' }] };
+      }
+    }
+    return v;
+  }
 
   // Per-worker share of what actually got KEPT (the productive load, not just routed load).
   contribution() {
