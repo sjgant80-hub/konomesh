@@ -1,0 +1,7 @@
+[
+  {
+    "mutation": "|| → &&",
+    "snippet": "return { ...v, valid: false, breaks: [...(v.breaks || []), { seq: e.seq, reason: 'worker/a",
+    "reason": "equivalent: line 135 is reached only after `if (!v.valid) return v`, so v.valid is true. verifyLineage sets valid = (breaks.length===0) and always returns breaks as a real array, so here v.breaks is [] (empty, truthy). Both v.breaks||[] and v.breaks&&[] evaluate to [], so the spread yields the same []; no behaviour change and no undefined-spread risk."
+  }
+]
