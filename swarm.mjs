@@ -98,8 +98,11 @@ export class Swarm {
 // not silently dropped.
 export async function dispatch(swarm, tasks, handlers, keyOf = t => t.key ?? t.id ?? String(t)) {
   const out = [];
-  for (const task of tasks) {
-    const worker = swarm.route(keyOf(task));
+  for (const task of (tasks || [])) {
+    // deriving the key can throw (null task, throwing getter); report it rather than aborting the batch
+    let worker;
+    try { worker = swarm.route(keyOf(task)); }
+    catch (e) { out.push({ task, worker: null, ok: false, error: `bad task key: ${e && e.message || e}` }); continue; }
     const fn = worker != null ? handlers[worker] : null;
     if (!fn) { out.push({ task, worker, ok: false, error: worker == null ? 'no workers' : `no handler for ${worker}` }); continue; }
     try { out.push({ task, worker, ok: true, result: await fn(task) }); }

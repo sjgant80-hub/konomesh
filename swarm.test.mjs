@@ -10,13 +10,22 @@ test('the golden constants are correct', () => {
   assert.ok(Math.abs(GOLDEN_ANGLE_DEG - 137.50776) < 1e-3);
 });
 
-test('vogel points are spread on the ring with no clustering', () => {
+test('vogelPoint is a well-spread VISUALISATION layout (not the routing mechanism)', () => {
+  // NOTE: vogelPoint drives only the sunflower demo visual. Routing is the identity-hashed vnode ring
+  // (see the DECENTRALISED + balance tests). This test guards the viz layout, nothing about routing.
   const n = 50;
   const positions = Array.from({ length: n }, (_, i) => vogelPoint(i).ring).sort((a, b) => a - b);
   let minGap = 1;
   for (let i = 1; i < positions.length; i++) minGap = Math.min(minGap, positions[i] - positions[i - 1]);
-  // the golden-ratio sequence guarantees gaps never collapse — no two points share a slot
   assert.ok(minGap > 0.5 / n, `min gap ${minGap} is well-spread (no clumping)`);
+});
+
+test('dispatch handles a null/undefined task — reported, not batch-aborting', async () => {
+  const s = new Swarm(['w0', 'w1']);
+  const out = await dispatch(s, [{ key: 'a' }, null, { key: 'b' }], { w0: t => t.key, w1: t => t.key });
+  assert.equal(out.length, 3, 'every entry accounted for, none dropped');
+  assert.ok(out.some(r => !r.ok && /bad task key/.test(r.error)), 'the null task is reported');
+  assert.equal(out.filter(r => r.ok).length, 2, 'the two real tasks still ran');
 });
 
 test('hashKey is deterministic and lands in [0,1)', () => {

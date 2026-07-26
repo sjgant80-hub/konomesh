@@ -31,6 +31,24 @@ const bytesOf = hex => { const u = new Uint8Array(hex.length / 2); for (let i = 
 // emit lowercase, so legitimate records pass; only tampered case fails here.
 const isHex = (s, len) => typeof s === 'string' && s.length === len && /^[0-9a-f]+$/.test(s);
 
+// The small-order Ed25519 point encodings (RFC 8032 §8.5) — the all-zeros key + all-zeros signature
+// otherwise "verify" for a share of attacker-chosen messages, letting a forged chain pass with NO
+// private key. Any author public key OR signature R-component (its first 32 bytes) equal to one of
+// these is rejected. Blocklist per the canonical ed25519 small-order set (libsodium).
+const SMALL_ORDER = new Set([
+  '0000000000000000000000000000000000000000000000000000000000000000',
+  '0100000000000000000000000000000000000000000000000000000000000000',
+  'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+  'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+  'edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+  'edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+  'eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+  'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a',
+  'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa',
+  '26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05',
+  '26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85',
+]);
+
 export async function sha256Hex(str) {
   return hexOf(await subtle.digest('SHA-256', ENC.encode(String(str))));
 }
@@ -79,7 +97,16 @@ export async function verifyRecord(rec) {
   if (!isHex(rec.sig, 128) || !isHex(rec.author, 64) || typeof rec.id !== 'string') {
     return { valid: false, reason: 'record is missing a well-formed sig / author / id' };
   }
-  const expectId = await sha256Hex(canon(rec) + rec.sig);
+  // Reject small-order / weak keys and signatures (RFC 8032 §8.5) BEFORE trusting a verify — otherwise
+  // the all-zeros key + all-zeros signature forge a chain with no private key.
+  if (SMALL_ORDER.has(rec.author) || SMALL_ORDER.has(rec.sig.slice(0, 64))) {
+    return { valid: false, reason: 'small-order / weak public key or signature point rejected' };
+  }
+  // canon() JSON.stringify's contentHash/parent/seq too; guard so a malformed record returns invalid
+  // rather than throwing out of the documented never-throw entry point.
+  let expectId;
+  try { expectId = await sha256Hex(canon(rec) + rec.sig); }
+  catch { return { valid: false, reason: 'record fields are malformed' }; }
   if (expectId !== rec.id) return { valid: false, reason: 'record id does not match its contents — tampered' };
   let pub;
   try { pub = await subtle.importKey('raw', bytesOf(rec.author), { name: 'Ed25519' }, false, ['verify']); }

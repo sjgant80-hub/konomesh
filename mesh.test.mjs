@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Mesh } from './mesh.mjs';
-import { generateIdentity } from './lineage.mjs';
+import { generateIdentity, sha256Hex } from './lineage.mjs';
 import { Vault, memoryAdapter } from './vault.mjs';
 
 // quality = fraction of non-TODO lines (same simple benchmark the sieve demo uses)
@@ -59,18 +59,22 @@ test('a bad-licence output is flagged, not signed — even if high quality', asy
   assert.equal(mesh.ledger.length, 0);
 });
 
-test('the ledger binds the REAL produced content — distinct payloads get distinct payloadHashes', async () => {
-  // handlers emit genuinely different content per task; payloadHash must reflect WHAT was produced
-  const handlers = {
-    w0: t => ({ content: `payload for ${t.key} :: ${'x'.repeat(t.key.length)}`, licence: 'MIT' }),
-    w1: t => ({ content: { obj: t.key, n: t.key.length }, licence: 'MIT' }),
-    w2: t => ({ content: `entirely different ${t.key}`, licence: 'MIT' }),
-  };
-  const mesh = await mkMesh(handlers);
-  await mesh.metabolize(tasks(12));
-  const hashes = new Set(mesh.ledger.map(e => e.payloadHash));
-  assert.ok(hashes.size > 1, 'payloadHashes vary with content (not all the constant sha256("null"))');
+test('the ledger binds the REAL produced content — payloadHash EQUALS sha256(content)', async () => {
+  // one worker, one task, known content — assert the exact binding, so mis-binding (e.g. hashing the
+  // artifact id, or the constant sha256("null")) fails rather than merely "varying".
+  const CONTENT = 'the exact produced bytes for this artifact';
+  const mesh = new Mesh({ workers: ['w0'], handlers: { w0: () => ({ content: CONTENT, licence: 'MIT' }) }, assess: () => ({ score: 1 }), identity: await generateIdentity(), minScore: 0.5 });
+  await mesh.metabolize([{ key: 'only' }]);
+  assert.equal(mesh.ledger.length, 1);
+  assert.equal(mesh.ledger[0].payloadHash, await sha256Hex(CONTENT), 'payloadHash is exactly the SHA-256 of the produced content');
   assert.equal((await mesh.verify()).valid, true);
+});
+
+test('an empty ledger verifies as valid (nothing kept ≠ tampered)', async () => {
+  const mesh = new Mesh({ workers: ['w0'], handlers: { w0: () => ({ content: 'TODO\nTODO', licence: 'MIT' }) }, assess: () => ({ score: 0 }), identity: await generateIdentity(), minScore: 0.7 });
+  await mesh.metabolize([{ key: 'x' }]);   // everything rejected → nothing signed
+  assert.equal(mesh.ledger.length, 0);
+  assert.equal((await mesh.verify()).valid, true, 'an empty ledger is valid, not "tampered"');
 });
 
 test('concurrent metabolize() calls serialise — the chain is not corrupted', async () => {

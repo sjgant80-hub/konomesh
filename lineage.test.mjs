@@ -73,6 +73,24 @@ test('SEQ (multi-record): a fork whose seq does not increment by 1 is caught', a
   assert.ok(v.breaks.some(x => /seq does not increment/.test(x.reason)), 'the multi-record seq check fired');
 });
 
+test('CRITICAL: a small-order (all-zeros) key + all-zeros sig cannot forge a valid chain', async () => {
+  const zeroAuthor = '0'.repeat(64), zeroSig = '0'.repeat(128);
+  const canon = r => JSON.stringify({ contentHash: r.contentHash, author: r.author, parent: r.parent, seq: r.seq });
+  const f0 = { contentHash: await sha256Hex('forged'), author: zeroAuthor, parent: null, seq: 0, sig: zeroSig };
+  f0.id = await sha256Hex(canon(f0) + f0.sig);
+  assert.equal((await verifyRecord(f0)).valid, false, 'the small-order key is rejected before any verify');
+  assert.equal((await verifyLineage([f0])).valid, false, 'no private key ⇒ no valid chain');
+});
+
+test('a record with malformed non-hex fields returns invalid, not a throw', async () => {
+  const a = await generateIdentity();
+  const root = await mint('x', a);
+  // parent set to a value that breaks canon()'s assumptions shouldn't crash verifyLineage
+  const v = await verifyLineage([{ ...root, parent: { nested: 'bad' } }]);
+  assert.equal(typeof v.valid, 'boolean');
+  assert.equal(v.valid, false);
+});
+
 test('id-integrity is enforced independently — tampering ONLY the id is caught', async () => {
   const a = await generateIdentity();
   const root = await mint('content', a);

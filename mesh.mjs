@@ -120,6 +120,9 @@ export class Mesh {
   // (worker / artifact / payloadHash) reproduces its SIGNED contentHash — so tampering with the
   // attribution fields is caught even though they sit outside lineage's own canon.
   async verify() {
+    // An empty ledger is legitimately valid (a round where everything was correctly rejected/flagged
+    // signs nothing) — that is "nothing kept", not "tampered".
+    if (this.ledger.length === 0) return { valid: true, depth: 0, root: null, tip: null, breaks: [] };
     const v = await verifyLineage(this.ledger);
     if (!v.valid) return v;
     for (const e of this.ledger) {

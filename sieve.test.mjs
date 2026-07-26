@@ -126,13 +126,23 @@ test('distinct OBJECT contents get distinct addresses (no [object Object] collap
   assert.notEqual(r.kept[0].hash, r.kept[1].hash);
 });
 
-test('cluster groups records that share content', () => {
+test('cluster groups records that share content, LARGEST first (order-independent of input)', () => {
+  // the smaller cluster ('bb') is inserted FIRST, so a passing test genuinely requires the sort
   const recs = [
-    { hash: 'aa', id: '1' }, { hash: 'aa', id: '2' }, { hash: 'bb', id: '3' },
+    { hash: 'bb', id: '3' }, { hash: 'aa', id: '1' }, { hash: 'aa', id: '2' },
   ];
   const clusters = cluster(recs);
-  assert.equal(clusters[0].members.length, 2, 'largest cluster first');
-  assert.equal(clusters[0].hash, 'aa');
+  assert.equal(clusters[0].hash, 'aa', 'the 2-member cluster is first despite being inserted second');
+  assert.equal(clusters[0].members.length, 2);
+  assert.equal(clusters[1].members.length, 1);
+});
+
+test('a candidate with a throwing id/source getter is isolated, not batch-aborting', async () => {
+  const s = new Sieve({ assess: () => ({ score: 1 }), minScore: 0.5 });
+  const poison = { content: 'p', licence: 'MIT', get id() { throw new Error('id getter blew up'); } };
+  const r = await s.sift([{ content: 'good1', licence: 'MIT' }, poison, { content: 'good2', licence: 'MIT' }]);
+  assert.equal(r.kept.length, 2, 'both good candidates survive the poison getter');
+  assert.equal(r.errored.length, 1);
 });
 
 test('an async assessor is awaited', async () => {

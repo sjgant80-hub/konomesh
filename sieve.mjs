@@ -79,24 +79,26 @@ export class Sieve {
 
     for (const c of (candidates || [])) {
       if (c == null || typeof c !== 'object') { errored.push({ candidate: c, reason: 'candidate is not an object' }); continue; }
-      // FULL per-candidate isolation: hashing AND assessing are inside the guard, so a candidate with
-      // unserialisable content or a throwing assessor drops to `errored` — it never aborts the batch
-      // and discards everyone already kept.
-      let hash, score, licenceClass;
+      // FULL per-candidate isolation: EVERY field read (including c.id / c.source / c.licence, which
+      // could be throwing accessors on a hostile artifact) plus hashing and assessing happen inside the
+      // guard, so a poison candidate drops to `errored` — it never aborts the batch. The catch itself
+      // reads no candidate property, so it cannot re-throw.
+      let hash, score, licenceClass, cid, csource, clicence;
       try {
+        cid = c.id; csource = c.source; clicence = c.licence;
         hash = contentHash(c.content);
         const raw = await this.assess(c);
         score = typeof raw === 'number' ? raw : Number(raw && raw.score);
-        licenceClass = classifyLicence(c.licence);
+        licenceClass = classifyLicence(clicence);
       } catch (e) {
-        errored.push({ id: c.id || null, source: c.source || null, reason: `processing threw: ${e && e.message || e}` });
+        errored.push({ id: null, source: null, reason: `processing threw: ${e && e.message || e}` });
         continue;
       }
       const record = {
-        id: c.id || hash,
+        id: cid || hash,
         hash,
-        source: c.source || null,
-        licence: c.licence || null,
+        source: csource || null,
+        licence: clicence || null,
         licenceClass,
         score: Number.isFinite(score) ? score : 0,
       };
