@@ -59,6 +59,29 @@ test('a bad-licence output is flagged, not signed — even if high quality', asy
   assert.equal(mesh.ledger.length, 0);
 });
 
+test('the ledger binds the REAL produced content — distinct payloads get distinct payloadHashes', async () => {
+  // handlers emit genuinely different content per task; payloadHash must reflect WHAT was produced
+  const handlers = {
+    w0: t => ({ content: `payload for ${t.key} :: ${'x'.repeat(t.key.length)}`, licence: 'MIT' }),
+    w1: t => ({ content: { obj: t.key, n: t.key.length }, licence: 'MIT' }),
+    w2: t => ({ content: `entirely different ${t.key}`, licence: 'MIT' }),
+  };
+  const mesh = await mkMesh(handlers);
+  await mesh.metabolize(tasks(12));
+  const hashes = new Set(mesh.ledger.map(e => e.payloadHash));
+  assert.ok(hashes.size > 1, 'payloadHashes vary with content (not all the constant sha256("null"))');
+  assert.equal((await mesh.verify()).valid, true);
+});
+
+test('concurrent metabolize() calls serialise — the chain is not corrupted', async () => {
+  const handlers = { w0: t => ({ content: `c ${t.key}\ny`, licence: 'MIT' }), w1: t => ({ content: `c ${t.key}\ny`, licence: 'MIT' }), w2: t => ({ content: `c ${t.key}\ny`, licence: 'MIT' }) };
+  const mesh = await mkMesh(handlers);
+  // fire two rounds WITHOUT awaiting between them
+  const [a, b] = await Promise.all([mesh.metabolize(tasks(5)), mesh.metabolize(tasks(5).map(t => ({ key: t.key + '-b' })))]);
+  assert.equal(mesh.ledger.length, a.summary.kept + b.summary.kept, 'both rounds appended without interleaving');
+  assert.equal((await mesh.verify()).valid, true, 'the chain is intact despite concurrency');
+});
+
 test('ATTRIBUTION is signed — forging worker/artifact now breaks verification', async () => {
   const handlers = { w0: t => ({ content: `ok ${t.key}\nx`, licence: 'MIT' }), w1: t => ({ content: `ok ${t.key}\nx`, licence: 'MIT' }), w2: t => ({ content: `ok ${t.key}\nx`, licence: 'MIT' }) };
   const mesh = await mkMesh(handlers);

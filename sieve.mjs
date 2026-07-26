@@ -30,17 +30,24 @@ export function classifyLicence(licence) {
   return 'unknown';
 }
 
-// FNV-1a 32-bit content address (hex). Deterministic, zero-dep. Identical content ⇒ identical id.
-// Objects are canonically JSON-serialised (not String()'d to "[object Object]", which would make every
-// distinct object collide on one address); strings are hashed as-is.
+// 128-bit content address (hex). Deterministic, zero-dep. Identical content ⇒ identical id. A 32-bit
+// address collided within ~65k artifacts (birthday bound), silently dropping distinct content at
+// curation scale; 128 bits pushes that past any real corpus. Four FNV-1a passes with distinct seeds,
+// each avalanched (fmix32), concatenated. Objects are canonically JSON-serialised; unserialisable
+// content (circular / BigInt) yields a stable marker rather than throwing (the caller isolates it).
 export function contentHash(content) {
-  const s = content == null ? ''
-    : typeof content === 'string' ? content
-    : typeof content === 'object' ? JSON.stringify(content)
-    : String(content);
-  let h = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
-  return (h >>> 0).toString(16).padStart(8, '0');
+  // Serialise the content; genuinely unserialisable content (circular / BigInt) throws here, and the
+  // caller (sift) isolates that candidate into `errored` rather than aborting the batch.
+  let s = content == null ? '' : typeof content === 'string' ? content : JSON.stringify(content);
+  if (s === undefined) s = String(content);   // JSON.stringify(fn/symbol) → undefined
+  let out = '';
+  for (const seed of [0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35]) {
+    let h = seed;
+    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+    h ^= h >>> 16; h = Math.imul(h, 0x85ebca6b); h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35); h ^= h >>> 16;
+    out += (h >>> 0).toString(16).padStart(8, '0');
+  }
+  return out;   // 32 hex chars = 128-bit
 }
 
 const DEFAULTS = {
@@ -68,17 +75,23 @@ export class Sieve {
   async sift(candidates = []) {
     const kept = [], rejected = [], flagged = [], errored = [];
     const seen = new Set();
+    let deduped = 0;   // survivors that collapsed onto an already-kept content-address
 
     for (const c of (candidates || [])) {
       if (c == null || typeof c !== 'object') { errored.push({ candidate: c, reason: 'candidate is not an object' }); continue; }
-      const hash = contentHash(c.content);
-      // per-candidate isolation: a throwing assessor drops THIS candidate, it does not abort the batch
-      // and discard everyone already processed.
-      let raw;
-      try { raw = await this.assess(c); }
-      catch (e) { errored.push({ id: c.id || hash, hash, source: c.source || null, reason: `assessor threw: ${e && e.message || e}` }); continue; }
-      const score = typeof raw === 'number' ? raw : Number(raw && raw.score);
-      const licenceClass = classifyLicence(c.licence);
+      // FULL per-candidate isolation: hashing AND assessing are inside the guard, so a candidate with
+      // unserialisable content or a throwing assessor drops to `errored` — it never aborts the batch
+      // and discards everyone already kept.
+      let hash, score, licenceClass;
+      try {
+        hash = contentHash(c.content);
+        const raw = await this.assess(c);
+        score = typeof raw === 'number' ? raw : Number(raw && raw.score);
+        licenceClass = classifyLicence(c.licence);
+      } catch (e) {
+        errored.push({ id: c.id || null, source: c.source || null, reason: `processing threw: ${e && e.message || e}` });
+        continue;
+      }
       const record = {
         id: c.id || hash,
         hash,
@@ -90,14 +103,15 @@ export class Sieve {
 
       if (record.score < this.minScore) { rejected.push({ ...record, reason: `score ${record.score} < ${this.minScore}` }); continue; }
       if (!this.allow.has(licenceClass)) { flagged.push({ ...record, reason: `licence class "${licenceClass}" needs a human decision` }); continue; }
-      if (seen.has(hash)) continue;         // content-address dedup — identical survivors collapse
+      if (seen.has(hash)) { deduped++; continue; }   // identical content-address collapses (counted, not silently lost)
       seen.add(hash);
       kept.push(record);
     }
 
+    // reconciliation holds by construction: kept + rejected + flagged + errored + deduped === in
     return {
-      kept, rejected, flagged, errored,
-      summary: { in: (candidates || []).length, kept: kept.length, rejected: rejected.length, flagged: flagged.length, errored: errored.length },
+      kept, rejected, flagged, errored, deduped,
+      summary: { in: (candidates || []).length, kept: kept.length, rejected: rejected.length, flagged: flagged.length, errored: errored.length, deduped },
     };
   }
 }

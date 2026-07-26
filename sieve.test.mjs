@@ -79,12 +79,25 @@ test('summary counts reconcile to the input — including deduped survivors', as
     { content: 'TODO\nx', licence: 'MIT' },           // rejected
     { content: 'clean\ncode2', licence: 'GPL-3.0' },  // flagged
   ]);
-  // the reconciliation invariant: kept(unique) + rejected + flagged + errored + dedup-collapsed == in
-  const dedup = r.summary.in - (r.summary.kept + r.summary.rejected + r.summary.flagged + r.summary.errored);
-  assert.equal(dedup, 1, 'exactly one input collapsed as a duplicate');
+  // deduped is now an INDEPENDENT count, not derived from the others — so the reconciliation can fail
+  // if a candidate is ever silently lost (the collision blind spot the previous test hid).
+  assert.equal(r.summary.deduped, 1, 'exactly one input collapsed as a duplicate');
   assert.equal(r.summary.kept, 1);
   assert.equal(r.summary.rejected, 1);
   assert.equal(r.summary.flagged, 1);
+  assert.equal(r.summary.kept + r.summary.rejected + r.summary.flagged + r.summary.errored + r.summary.deduped, r.summary.in, 'every input is accounted for exactly once');
+});
+
+test('unserialisable content is isolated to `errored`, not aborting the batch', async () => {
+  const circ = {}; circ.self = circ;
+  const s = new Sieve({ assess: () => ({ score: 1 }), minScore: 0.5 });
+  const r = await s.sift([
+    { content: 'first good', licence: 'MIT', source: 'a' },
+    { content: circ, licence: 'MIT', source: 'b' },          // circular → can't JSON-serialise
+    { content: 'third good', licence: 'MIT', source: 'c' },
+  ]);
+  assert.equal(r.kept.length, 2, 'both good candidates survive the bad one');
+  assert.equal(r.summary.kept + r.summary.rejected + r.summary.flagged + r.summary.errored + r.summary.deduped, 3, 'all three accounted for');
 });
 
 test('a non-finite minScore is rejected loudly — a null threshold must NOT disable the gate', () => {

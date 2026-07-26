@@ -24,8 +24,12 @@ const ENC = new TextEncoder();
 
 const hexOf = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
 const bytesOf = hex => { const u = new Uint8Array(hex.length / 2); for (let i = 0; i < u.length; i++) u[i] = parseInt(hex.substr(i * 2, 2), 16); return u; };
-// A well-formed hex string of an exact length (Ed25519 sig = 128 hex chars, raw pubkey = 64).
-const isHex = (s, len) => typeof s === 'string' && s.length === len && /^[0-9a-f]+$/i.test(s);
+// A well-formed hex string of an exact length in CANONICAL LOWERCASE (Ed25519 sig = 128 hex chars,
+// raw pubkey = 64). Lowercase is required so a record's id — which content-addresses canon + sig —
+// cannot be forked into a second "valid" id merely by upper-casing the sig hex (bytesOf parses hex
+// case-insensitively, so an uppercased sig still verifies but yields a different id). mint/fork always
+// emit lowercase, so legitimate records pass; only tampered case fails here.
+const isHex = (s, len) => typeof s === 'string' && s.length === len && /^[0-9a-f]+$/.test(s);
 
 export async function sha256Hex(str) {
   return hexOf(await subtle.digest('SHA-256', ENC.encode(String(str))));

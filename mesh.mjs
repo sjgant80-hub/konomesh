@@ -42,6 +42,7 @@ export class Mesh {
     this.keyOf = keyOf || (t => t.key ?? t.id ?? String(t));
     this.store = store || null;
     this.ledger = [];   // the growing Ed25519 provenance chain of accepted artifacts
+    this._lock = Promise.resolve();   // single-flight guard so concurrent metabolize() calls serialise
   }
 
   static LEDGER_KEY = 'konomesh-ledger';
@@ -53,9 +54,15 @@ export class Mesh {
     return this.ledger;
   }
 
-  // Run a batch of tasks through the whole tract. Returns what was produced, kept, rejected, flagged,
-  // and the new ledger records signed this round.
-  async metabolize(tasks = []) {
+  // Run a batch through the whole tract. Serialised: two concurrent metabolize() calls would both fork
+  // from the same tip across the awaits and corrupt the append-only chain, so calls queue on _lock.
+  metabolize(tasks = []) {
+    const run = this._lock.then(() => this._metabolize(tasks));
+    this._lock = run.then(() => {}, () => {});   // the queue continues whether a round resolves or throws
+    return run;
+  }
+
+  async _metabolize(tasks) {
     // 1 + 2 · route each task to its worker and run the work (BODY).
     const produced = await dispatch(this.swarm, tasks, this.handlers, this.keyOf);
 
@@ -68,15 +75,18 @@ export class Mesh {
         licence: p.result.licence,
         source: p.worker,
       }));
+    // keep the real produced content addressable by artifact id — the sieve's kept records carry only
+    // a content-address, so we hash the ACTUAL content here (with lineage's SHA-256) to bind it.
+    const contentOf = new Map(candidates.map(c => [c.id, c.content]));
     const sifted = await this.sieve.sift(candidates);
 
     // 4 · sign each survivor onto the single provenance chain (append-only, tamper-evident). The
-    // SIGNED content binds the attribution (worker + artifact + payload hash), so none of those can be
-    // rewritten without breaking the signature — fixing the earlier hole where worker/artifact lived
-    // outside the signed canon and contribution() could be fabricated.
+    // SIGNED content binds the attribution (worker + artifact + a hash of the REAL produced content),
+    // so none of those can be rewritten without breaking the signature — and two different payloads for
+    // the same task no longer sign identically.
     const signedThisRound = [];
     for (const kept of sifted.kept) {
-      const payloadHash = await sha256Hex(ser(kept.content));
+      const payloadHash = await sha256Hex(ser(contentOf.get(kept.id)));
       const signed = attribCanon(kept.source, kept.id, payloadHash);
       const rec = this.ledger.length === 0
         ? await mint(signed, this.identity)

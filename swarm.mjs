@@ -65,7 +65,10 @@ export class Swarm {
     this.ring = ring.sort((a, b) => a.pos - b.pos || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   }
 
-  setWorkers(workerIds) { this.workers = [...new Set(workerIds)]; this._rebuild(); return this; }
+  // Worker ids are normalised to strings, so a numeric id 1 and a string '1' are the same worker (they
+  // already hash to the same ring positions via `${id}#v`); without this their identical positions
+  // would be tie-broken by array order, reintroducing order-dependence.
+  setWorkers(workerIds) { this.workers = [...new Set(workerIds.map(String))]; this._rebuild(); return this; }
 
   get size() { return this.workers.length; }
 
@@ -79,8 +82,8 @@ export class Swarm {
     return this.ring[lo % this.ring.length].id; // wrap
   }
 
-  add(id) { if (!this.workers.includes(id)) { this.workers.push(id); this._rebuild(); } return this; }
-  remove(id) { this.workers = this.workers.filter(w => w !== id); this._rebuild(); return this; }
+  add(id) { const s = String(id); if (!this.workers.includes(s)) { this.workers.push(s); this._rebuild(); } return this; }
+  remove(id) { const s = String(id); this.workers = this.workers.filter(w => w !== s); this._rebuild(); return this; }
 
   // How many of these keys land on each worker — for checking balance.
   distribution(keys) {

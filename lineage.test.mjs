@@ -73,6 +73,33 @@ test('SEQ (multi-record): a fork whose seq does not increment by 1 is caught', a
   assert.ok(v.breaks.some(x => /seq does not increment/.test(x.reason)), 'the multi-record seq check fired');
 });
 
+test('id-integrity is enforced independently — tampering ONLY the id is caught', async () => {
+  const a = await generateIdentity();
+  const root = await mint('content', a);
+  // everything else valid (sig still verifies); only the id is swapped
+  const v = await verifyRecord({ ...root, id: 'deadbeef'.repeat(8) });
+  assert.equal(v.valid, false);
+  assert.match(v.reason, /id does not match/);
+});
+
+test('id is NOT malleable — upper-casing the sig hex does not mint a new valid record', async () => {
+  const a = await generateIdentity();
+  const root = await mint('content', a);
+  const upperSig = root.sig.toUpperCase();
+  const forgedId = await sha256Hex(JSON.stringify({ contentHash: root.contentHash, author: root.author, parent: root.parent, seq: root.seq }) + upperSig);
+  const v = await verifyRecord({ ...root, sig: upperSig, id: forgedId });
+  assert.equal(v.valid, false, 'a case-variant sig is rejected, so one signature yields exactly one id');
+});
+
+test('a non-root first record (wrong parent or seq) is rejected', async () => {
+  const a = await generateIdentity();
+  const r0 = await mint('v1', a);
+  const r1 = await fork(r0, 'v2', a);   // seq 1, parent r0.id — a valid NON-root record
+  const v = await verifyLineage([r1]);  // placed as the root of a chain
+  assert.equal(v.valid, false);
+  assert.ok(v.breaks.some(x => /root must have a null parent|root seq must be 0/.test(x.reason)));
+});
+
 test('a null/undefined chain element returns invalid — never throws', async () => {
   const a = await generateIdentity();
   const r0 = await mint('v1', a);
