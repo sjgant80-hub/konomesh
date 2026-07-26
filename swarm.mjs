@@ -96,7 +96,7 @@ export class Swarm {
 // Metabolise a queue: route each task to its worker's handler and collect { task, worker, result }.
 // handlers is a map workerId → (task) => result (sync or async). Tasks with no handler are reported,
 // not silently dropped.
-export async function dispatch(swarm, tasks, handlers, keyOf = t => t.key ?? t.id ?? String(t)) {
+export async function dispatch(swarm, tasks, handlers = {}, keyOf = t => t.key ?? t.id ?? String(t)) {
   const out = [];
   for (const task of (tasks || [])) {
     // deriving the key can throw (null task, throwing getter); report it rather than aborting the batch

@@ -78,8 +78,18 @@ test('CRITICAL: a small-order (all-zeros) key + all-zeros sig cannot forge a val
   const canon = r => JSON.stringify({ contentHash: r.contentHash, author: r.author, parent: r.parent, seq: r.seq });
   const f0 = { contentHash: await sha256Hex('forged'), author: zeroAuthor, parent: null, seq: 0, sig: zeroSig };
   f0.id = await sha256Hex(canon(f0) + f0.sig);
-  assert.equal((await verifyRecord(f0)).valid, false, 'the small-order key is rejected before any verify');
+  const vr = await verifyRecord(f0);
+  assert.equal(vr.valid, false);
+  assert.match(vr.reason, /small-order/, 'rejected specifically as a small-order key, not incidentally');
   assert.equal((await verifyLineage([f0])).valid, false, 'no private key ⇒ no valid chain');
+});
+
+test('a BigInt/Symbol seq returns invalid — verifyLineage never throws', async () => {
+  const a = await generateIdentity();
+  const bad = { ...(await mint('v1', a)), seq: 0n };
+  const r1 = await fork(await mint('v1', a), 'v2', a);
+  assert.equal(typeof (await verifyLineage([bad, r1])).valid, 'boolean', 'no throw on a BigInt seq');
+  assert.equal((await verifyLineage([bad, r1])).valid, false);
 });
 
 test('a record with malformed non-hex fields returns invalid, not a throw', async () => {

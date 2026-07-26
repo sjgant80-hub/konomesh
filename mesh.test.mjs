@@ -70,6 +70,21 @@ test('the ledger binds the REAL produced content — payloadHash EQUALS sha256(c
   assert.equal((await mesh.verify()).valid, true);
 });
 
+test('duplicate task keys do NOT cross-bind content — each kept artifact binds its OWN bytes', async () => {
+  const A = 'GOOD clean content alpha', B = 'GOOD clean content bravo';
+  let n = 0;
+  const mesh = new Mesh({
+    workers: ['w0'],
+    handlers: { w0: () => ({ content: (n++ === 0 ? A : B), licence: 'MIT' }) },
+    assess: () => ({ score: 1 }), identity: await generateIdentity(), minScore: 0.5,
+  });
+  await mesh.metabolize([{ key: 'dup' }, { key: 'dup' }]);   // SAME key twice, different content
+  assert.equal(mesh.ledger.length, 2);
+  const hashes = new Set(mesh.ledger.map(e => e.payloadHash));
+  assert.equal(hashes.size, 2, 'the two entries bind DISTINCT content, not the last-write-wins collapse');
+  assert.ok(hashes.has(await sha256Hex(A)) && hashes.has(await sha256Hex(B)), 'both real payloads are bound');
+});
+
 test('an empty ledger verifies as valid (nothing kept ≠ tampered)', async () => {
   const mesh = new Mesh({ workers: ['w0'], handlers: { w0: () => ({ content: 'TODO\nTODO', licence: 'MIT' }) }, assess: () => ({ score: 0 }), identity: await generateIdentity(), minScore: 0.7 });
   await mesh.metabolize([{ key: 'x' }]);   // everything rejected → nothing signed

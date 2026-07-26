@@ -97,6 +97,8 @@ test('unserialisable content is isolated to `errored`, not aborting the batch', 
     { content: 'third good', licence: 'MIT', source: 'c' },
   ]);
   assert.equal(r.kept.length, 2, 'both good candidates survive the bad one');
+  assert.equal(r.errored.length, 1, 'the unserialisable one is in the errored bucket');
+  assert.equal(r.errored[0].source, 'b', 'the errored record carries its captured source');
   assert.equal(r.summary.kept + r.summary.rejected + r.summary.flagged + r.summary.errored + r.summary.deduped, 3, 'all three accounted for');
 });
 

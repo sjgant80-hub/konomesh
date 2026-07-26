@@ -67,16 +67,20 @@ export class Mesh {
     const produced = await dispatch(this.swarm, tasks, this.handlers, this.keyOf);
 
     // 3 · gate the produced artifacts. Only successfully-produced ones become candidates.
+    // Candidate ids must be UNIQUE, or two artifacts sharing a task key (worker+key) would collide and
+    // one's ledger entry could bind the OTHER's content (even a rejected sibling's). Disambiguate on
+    // collision so every produced artifact keeps its own id and its own content.
+    const usedIds = new Set();
     const candidates = produced
       .filter(p => p.ok && p.result && p.result.content != null)
-      .map(p => ({
-        id: `${p.worker}:${this.keyOf(p.task)}`,
-        content: p.result.content,
-        licence: p.result.licence,
-        source: p.worker,
-      }));
-    // keep the real produced content addressable by artifact id — the sieve's kept records carry only
-    // a content-address, so we hash the ACTUAL content here (with lineage's SHA-256) to bind it.
+      .map((p, i) => {
+        let id = `${p.worker}:${this.keyOf(p.task)}`;
+        while (usedIds.has(id)) id = `${id}#${i}`;
+        usedIds.add(id);
+        return { id, content: p.result.content, licence: p.result.licence, source: p.worker };
+      });
+    // keep the real produced content addressable by its now-unique artifact id — the sieve's kept
+    // records carry only a content-address, so we hash the ACTUAL content here (SHA-256) to bind it.
     const contentOf = new Map(candidates.map(c => [c.id, c.content]));
     const sifted = await this.sieve.sift(candidates);
 

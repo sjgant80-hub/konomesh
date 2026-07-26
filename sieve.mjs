@@ -33,8 +33,8 @@ export function classifyLicence(licence) {
 // 128-bit content address (hex). Deterministic, zero-dep. Identical content ⇒ identical id. A 32-bit
 // address collided within ~65k artifacts (birthday bound), silently dropping distinct content at
 // curation scale; 128 bits pushes that past any real corpus. Four FNV-1a passes with distinct seeds,
-// each avalanched (fmix32), concatenated. Objects are canonically JSON-serialised; unserialisable
-// content (circular / BigInt) yields a stable marker rather than throwing (the caller isolates it).
+// each avalanched (fmix32), concatenated. Objects are canonically JSON-serialised; genuinely
+// unserialisable content (circular / BigInt) THROWS here, and sift() isolates that candidate to `errored`.
 export function contentHash(content) {
   // Serialise the content; genuinely unserialisable content (circular / BigInt) throws here, and the
   // caller (sift) isolates that candidate into `errored` rather than aborting the batch.
@@ -91,7 +91,10 @@ export class Sieve {
         score = typeof raw === 'number' ? raw : Number(raw && raw.score);
         licenceClass = classifyLicence(clicence);
       } catch (e) {
-        errored.push({ id: null, source: null, reason: `processing threw: ${e && e.message || e}` });
+        // include id/source IF they were captured before the throw (they're read first, inside the
+        // guard); if the throw was reading them, they stay undefined → null. The catch reads no live
+        // candidate property, so it cannot itself re-throw.
+        errored.push({ id: cid ?? null, source: csource ?? null, reason: `processing threw: ${e && e.message || e}` });
         continue;
       }
       const record = {
@@ -110,10 +113,12 @@ export class Sieve {
       kept.push(record);
     }
 
-    // reconciliation holds by construction: kept + rejected + flagged + errored + deduped === in
+    // `in` is derived from what was actually processed, so it is correct for ANY iterable (a
+    // generator/Set has no .length) and reconciliation holds by construction.
+    const inCount = kept.length + rejected.length + flagged.length + errored.length + deduped;
     return {
       kept, rejected, flagged, errored, deduped,
-      summary: { in: (candidates || []).length, kept: kept.length, rejected: rejected.length, flagged: flagged.length, errored: errored.length, deduped },
+      summary: { in: inCount, kept: kept.length, rejected: rejected.length, flagged: flagged.length, errored: errored.length, deduped },
     };
   }
 }

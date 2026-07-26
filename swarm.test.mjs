@@ -20,6 +20,13 @@ test('vogelPoint is a well-spread VISUALISATION layout (not the routing mechanis
   assert.ok(minGap > 0.5 / n, `min gap ${minGap} is well-spread (no clumping)`);
 });
 
+test('dispatch with no handlers argument reports per-task, does not throw', async () => {
+  const s = new Swarm(['w0', 'w1']);
+  const out = await dispatch(s, [{ key: 'a' }, { key: 'b' }]);   // handlers omitted
+  assert.equal(out.length, 2);
+  assert.ok(out.every(r => !r.ok && /no handler/.test(r.error)));
+});
+
 test('dispatch handles a null/undefined task — reported, not batch-aborting', async () => {
   const s = new Swarm(['w0', 'w1']);
   const out = await dispatch(s, [{ key: 'a' }, null, { key: 'b' }], { w0: t => t.key, w1: t => t.key });

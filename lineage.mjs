@@ -94,8 +94,8 @@ export async function verifyRecord(rec) {
   // A malformed record (missing/short sig, author, or id) must return invalid — NOT throw. These are
   // publicly-constructible values, so a caller feeding a forged/partial record must get a clean false,
   // not a crash, from the main entry point.
-  if (!isHex(rec.sig, 128) || !isHex(rec.author, 64) || typeof rec.id !== 'string') {
-    return { valid: false, reason: 'record is missing a well-formed sig / author / id' };
+  if (!isHex(rec.sig, 128) || !isHex(rec.author, 64) || typeof rec.id !== 'string' || typeof rec.seq !== 'number') {
+    return { valid: false, reason: 'record is missing a well-formed sig / author / id / seq' };
   }
   // Reject small-order / weak keys and signatures (RFC 8032 §8.5) BEFORE trusting a verify — otherwise
   // the all-zeros key + all-zeros signature forge a chain with no private key.
@@ -134,10 +134,13 @@ export async function verifyLineage(chain) {
       if (rec.seq !== 0) breaks.push({ seq: rec.seq, reason: 'root seq must be 0' });
     } else {
       const prev = chain[i - 1];
-      if (!prev || typeof prev !== 'object') breaks.push({ seq: rec.seq, reason: 'previous chain element is not a record' });
+      if (!prev || typeof prev !== 'object') breaks.push({ seq: rec && rec.seq, reason: 'previous chain element is not a record' });
       else {
         if (rec.parent !== prev.id) breaks.push({ seq: rec.seq, reason: `parent link broken — points at ${rec.parent}, previous record is ${prev.id}` });
-        if (rec.seq !== prev.seq + 1) breaks.push({ seq: rec.seq, reason: 'seq does not increment by 1' });
+        // guard the arithmetic: a non-number seq (BigInt/Symbol) on either record must not throw out
+        // of the never-throw entry point — it is already reported as malformed by verifyRecord.
+        if (typeof rec.seq !== 'number' || typeof prev.seq !== 'number') breaks.push({ reason: 'seq is not a number' });
+        else if (rec.seq !== prev.seq + 1) breaks.push({ seq: rec.seq, reason: 'seq does not increment by 1' });
       }
     }
   }
