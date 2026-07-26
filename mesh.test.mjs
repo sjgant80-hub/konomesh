@@ -85,6 +85,22 @@ test('duplicate task keys do NOT cross-bind content — each kept artifact binds
   assert.ok(hashes.has(await sha256Hex(A)) && hashes.has(await sha256Hex(B)), 'both real payloads are bound');
 });
 
+test('a produced result with null content is NOT a candidate — never gated, never signed', async () => {
+  // dispatch can return ok:true with a result whose content is null (a handler that yields nothing
+  // usable). The candidate filter (p.ok && p.result && p.result.content != null) must EXCLUDE it, so
+  // it is never hashed, never sifted, never signed. If the && degrades to ||, this null-content item
+  // leaks in as a candidate and gets signed onto the provenance chain — which must never happen.
+  const mesh = new Mesh({
+    workers: ['w0'],
+    handlers: { w0: () => ({ content: null, licence: 'MIT' }) },
+    assess: () => ({ score: 1 }), identity: await generateIdentity(), minScore: 0.5,
+  });
+  const r = await mesh.metabolize([{ key: 'only' }]);
+  assert.equal(r.summary.produced, 0, 'a null-content result is not counted as produced');
+  assert.equal(r.summary.kept, 0, 'nothing with null content is kept');
+  assert.equal(mesh.ledger.length, 0, 'null content never reaches the signed ledger');
+});
+
 test('an empty ledger verifies as valid (nothing kept ≠ tampered)', async () => {
   const mesh = new Mesh({ workers: ['w0'], handlers: { w0: () => ({ content: 'TODO\nTODO', licence: 'MIT' }) }, assess: () => ({ score: 0 }), identity: await generateIdentity(), minScore: 0.7 });
   await mesh.metabolize([{ key: 'x' }]);   // everything rejected → nothing signed
