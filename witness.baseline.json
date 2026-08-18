@@ -1,7 +1,47 @@
 [
   {
+    "mutation": ">= → >",
+    "snippet": "if (!subtle) throw new Error('fallineage: Web Crypto (crypto.subtle) unavailable — needs a",
+    "reason": "the >= lives inside the error-message STRING of a module-load guard: an environment without crypto.subtle cannot import the module to observe the message, so no test that can run can see the change. Text-only, no behavioural surface."
+  },
+  {
+    "mutation": "< → <=",
+    "snippet": "const bytesOf = hex => { const u = new Uint8Array(hex.length / 2); for (let i = 0; i < u.l",
+    "reason": "equivalent by typed-array semantics: the extra iteration computes parseInt('') which is NaN and assigns it one past the end, and a Uint8Array silently discards out-of-range writes — no input can observe the difference."
+  },
+  {
+    "mutation": "> → >=",
+    "snippet": "this.ring = ring.sort((a, b) => a.pos - b.pos || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))",
+    "reason": "equivalent on reachable inputs: the tie-break only runs when two vnodes share a position, and < vs <= (or > vs >=) differ only when the ids are ALSO equal — but same id and same position means the two ring entries are identical objects by content, so any reordering of them is unobservable."
+  },
+  {
+    "mutation": "< → <=",
+    "snippet": "this.ring = ring.sort((a, b) => a.pos - b.pos || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))",
+    "reason": "equivalent on reachable inputs: the tie-break only runs when two vnodes share a position, and < vs <= differ only when the ids are ALSO equal — same id and same position is two content-identical entries, whose order cannot be observed."
+  },
+  {
     "mutation": "|| → &&",
     "snippet": "return { ...v, valid: false, breaks: [...(v.breaks || []), { seq: e.seq, reason: 'worker/a",
-    "reason": "equivalent: line 135 is reached only after `if (!v.valid) return v`, so v.valid is true. verifyLineage sets valid = (breaks.length===0) and always returns breaks as a real array, so here v.breaks is [] (empty, truthy). Both v.breaks||[] and v.breaks&&[] evaluate to [], so the spread yields the same []; no behaviour change and no undefined-spread risk."
+    "reason": "equivalent by construction: two lines above, `if (!v.valid) return v` guarantees v.breaks is the EMPTY array here (verifyLineage computes valid as breaks.length === 0), and `[] || []` and `[] && []` are the same empty array. The `|| []` is defensiveness against a future verifyLineage that omits breaks on valid chains — worth keeping, not observable today."
+  },
+  {
+    "mutation": ">= → >",
+    "snippet": "if (!subtle) throw new Error('konomium-vault: Web Crypto (crypto.subtle) unavailable — nee",
+    "reason": "the >= lives inside the error-message STRING of the module-load guard (\"needs Node >= 15 or a browser\") — prose, not a comparison the code executes. The guard itself (!subtle) is killed."
+  },
+  {
+    "mutation": "< → <=",
+    "snippet": "if (typeof atob === 'function') { const bin = atob(str); const u8 = new Uint8Array(bin.len",
+    "reason": "typed-array OOB write is silently discarded: <= reads charCodeAt(bin.length) = NaN and writes it to u8[bin.length], one past the end of a fixed-length Uint8Array — the write is dropped by spec and every byte that matters is identical."
+  },
+  {
+    "mutation": "=== → !==",
+    "snippet": "if (typeof btoa === 'function') { let s = ''; for (const b of u8) s += String.fromCharCode",
+    "reason": "environment-shim branch: Node has BOTH btoa and Buffer, and both branches produce the identical base64 string — flipping which branch runs is unobservable wherever the tests can run. The branch exists for environments that have only one of the two."
+  },
+  {
+    "mutation": "=== → !==",
+    "snippet": "if (typeof atob === 'function') { const bin = atob(str); const u8 = new Uint8Array(bin.len",
+    "reason": "environment-shim branch, same as the btoa twin: Node has both atob and Buffer and the two decode paths return byte-identical Uint8Arrays; the flip only swaps which correct implementation answers."
   }
 ]

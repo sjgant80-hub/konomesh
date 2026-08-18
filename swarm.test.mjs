@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Swarm, dispatch, vogelPoint, hashKey, PHI, GOLDEN_ANGLE_DEG } from './swarm.mjs';
+import { GOLDEN_ANGLE_DEG, PHI, PHI_INV, Swarm, VNODES, dispatch, hashKey, vogelPoint } from './swarm.mjs';
 
 const keys = n => Array.from({ length: n }, (_, i) => `task-${i}`);
 
@@ -128,4 +128,103 @@ test('dispatch reports a missing handler rather than dropping the task', async (
   const failures = out.filter(r => !r.ok);
   assert.ok(failures.length > 0 && failures.every(f => /no handler/.test(f.error)));
   assert.equal(out.length, 20, 'nothing silently dropped');
+});
+
+
+// ─── the boundaries the mutation gate proved nothing was holding (estate bring-up) ───
+
+test('THE HASH READS EVERY CHARACTER AND NOT ONE MORE', () => {
+  // One iteration past the end xors NaN into the state and every hash in the ring becomes NaN —
+  // routing silently degenerates to "always the same vnode". Pin the function on knowns.
+  const h1 = hashKey('a');
+  assert.ok(Number.isFinite(h1) && h1 >= 0 && h1 < 1, 'hash left the unit interval: ' + h1);
+  assert.equal(hashKey('a'), hashKey('a'), 'the hash is not deterministic');
+  assert.notEqual(hashKey('a'), hashKey('b'), 'two different keys collided — the loop is not reading the content');
+  assert.notEqual(hashKey('ab'), hashKey('ba'), 'order of characters was ignored');
+});
+
+test('the ring has exactly workers × VNODES nodes — no extra vnode sneaks in', () => {
+  const s = new Swarm(['a', 'b', 'c']);
+  assert.equal(s.ring.length, 3 * VNODES, 'the vnode loop ran the wrong number of times');
+});
+
+test('A KEY LANDING EXACTLY ON A VNODE BELONGS TO THAT VNODE, not the next one', () => {
+  // The search is "first node with pos >= h". Flip it to > and every exact hit routes one node too
+  // far — invisible in random tests, certain for any key whose hash equals a vnode position. We
+  // manufacture the exact hit by asking for the position of a real vnode.
+  const s = new Swarm(['a', 'b']);
+  // find some vnode, then binary-search with h EXACTLY its pos by monkeypatching is not possible —
+  // instead assert the invariant directly against the ring: for every consecutive pair, a hash
+  // equal to a node's pos must route to that node's worker.
+  const node = s.ring[Math.floor(s.ring.length / 2)];
+  // route() hashes the KEY, so we can't inject h — but the invariant is checkable through the
+  // implementation's own parts: the first node with pos >= node.pos IS a node at that exact pos.
+  let lo = 0, hi = s.ring.length;
+  const h = node.pos;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (s.ring[mid].pos >= h) hi = mid; else lo = mid + 1; }
+  assert.equal(s.ring[lo % s.ring.length].pos, node.pos,
+    'an exact-position hit routed past the node that owns it');
+  // and the routing structure itself: every routed worker must be a real worker
+  for (const k of ['x', 'y', 'z', 'q']) assert.ok(s.workers.includes(s.route(k)));
+});
+
+test('replicas agree whatever order the workers arrived in', () => {
+  // The tie-break in the ring sort is what keeps two replicas identical when two vnodes collide on
+  // pos. Break either side of the comparator and insertion order leaks back in.
+  const one = new Swarm(['a', 'b', 'c']);
+  const other = new Swarm(['c', 'b', 'a']);
+  for (const k of ['t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8']) {
+    assert.equal(one.route(k), other.route(k), 'the same key routed differently on a reordered replica');
+  }
+  assert.deepEqual(one.ring.map(n => n.id + '@' + n.pos), other.ring.map(n => n.id + '@' + n.pos),
+    'the rings themselves diverged');
+});
+
+test('A WORKER THAT THROWS IS REPORTED BY ITS MESSAGE — Error, bare string, or falsy', async () => {
+  // `String(e && e.message || e)`: an Error reports its message, a thrown string reports itself,
+  // and a thrown falsy must still produce SOMETHING rather than crashing the report line.
+  const s = new Swarm(['w']);
+  const boom = await dispatch(s, [{ id: 't1' }], { w: () => { throw new Error('the pipe burst'); } });
+  assert.equal(boom[0].ok, false);
+  assert.match(boom[0].error, /the pipe burst/, 'an Error lost its message: ' + boom[0].error);
+  const bare = await dispatch(s, [{ id: 't2' }], { w: () => { throw 'bare failure'; } });
+  assert.match(bare[0].error, /bare failure/, 'a thrown string was lost: ' + bare[0].error);
+  const falsy = await dispatch(s, [{ id: 't3' }], { w: () => { throw undefined; } });
+  assert.equal(falsy[0].ok, false, 'a falsy throw was not even reported');
+});
+
+test('a task whose KEY throws is reported the same way, and the batch survives', async () => {
+  const s = new Swarm(['w']);
+  const hostile = { get key() { throw new Error('trap key'); } };
+  const out = await dispatch(s, [hostile, { id: 'good' }], { w: () => 'done' }, t => t.key);
+  assert.equal(out.length, 2, 'the hostile task aborted the batch');
+  assert.equal(out[0].ok, false);
+  assert.match(out[0].error, /bad task key: trap key/, 'the key failure lost its message: ' + out[0].error);
+  const bareKey = await dispatch(s, [{ get key() { throw 'plain'; } }], { w: () => 'x' }, t => t.key);
+  assert.match(bareKey[0].error, /bad task key: plain/, 'a bare-string key throw was lost');
+  assert.equal(out[1].ok, true, 'the good task did not run after the bad one');
+});
+
+
+test('THE HASH IS THE REPLICA CONTRACT — its exact values are pinned', () => {
+  // Two replicas agree because they compute the identical function. Any change to the loop, the
+  // primes or the finaliser is a new function, and a mixed fleet of old and new replicas routes the
+  // same key to different workers. So the exact values are the spec, pinned.
+  assert.equal(hashKey('a'), 0.10352621669881046);
+  assert.equal(hashKey('konomi'), 0.8308137238491327);
+});
+
+test('the golden-ratio conjugate is exactly itself', () => {
+  // PHI_INV is exported API. frac(i·(PHI_INV+2)) happens to equal frac(i·PHI_INV) for integers, so
+  // only pinning the constant itself makes a drift in it observable.
+  assert.ok(Math.abs(PHI_INV - 0.6180339887498949) < 1e-15, 'PHI_INV drifted to ' + PHI_INV);
+});
+
+test('A KEY HASHING EXACTLY ONTO A VNODE ROUTES TO THAT VNODE, through route() itself', () => {
+  // "First node with pos >= h": flip >= to > and every exact hit routes one node too far. The key
+  // a#103 IS one of worker a's own vnode labels, so its hash equals that vnode's position exactly —
+  // and the next node on this ring belongs to b, so the off-by-one is visible as the wrong worker.
+  const s = new Swarm(['a', 'b']);
+  assert.equal(hashKey('a#103'), 0.014675436774268746, 'the ring moved — re-derive the exact-hit key');
+  assert.equal(s.route('a#103'), 'a', 'an exact-position hit routed past the vnode that owns it');
 });

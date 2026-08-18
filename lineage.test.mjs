@@ -165,3 +165,56 @@ test('verification is stable — re-verifying a good chain stays valid', async (
   assert.equal((await verifyLineage(chain)).valid, true);
   assert.equal((await verifyLineage(chain)).valid, true);
 });
+
+
+// ─── the boundaries the mutation gate proved nothing was holding (estate bring-up) ───
+
+test('EACH MALFORMED FIELD ALONE makes a record invalid — never only all of them together', async () => {
+  // The check is a chain of ORs. Flipped to ANDs, a forged record with one well-formed field slips
+  // past the shape gate and reaches real crypto with garbage — a different, wronger failure.
+  const alice = await generateIdentity();
+  const good = await mint('real content', alice);
+  const cases = [
+    { ...good, sig: 'zz' },                          // bad sig alone
+    { ...good, author: 'nothex' },                    // bad author alone
+    { ...good, id: 42 },                              // bad id alone
+    { ...good, seq: 'zero' },                         // bad seq alone
+  ];
+  for (const rec of cases) {
+    const v = await verifyRecord(rec);
+    assert.equal(v.valid, false);
+    assert.match(v.reason, /well-formed/, 'one bad field was not enough: ' + v.reason);
+  }
+});
+
+test('A SMALL-ORDER AUTHOR ALONE IS REJECTED, and a small-order signature point alone too', async () => {
+  // The all-zeros key plus all-zeros signature forges a chain with no private key (RFC 8032 §8.5).
+  // Each half must trip the guard on its own — requiring both is exactly the forgery.
+  const alice = await generateIdentity();
+  const good = await mint('real content', alice);
+  const zeros64 = '0'.repeat(64);
+  const badAuthor = await verifyRecord({ ...good, author: zeros64 });
+  assert.equal(badAuthor.valid, false);
+  assert.match(badAuthor.reason, /small-order/, 'a weak KEY alone was not rejected: ' + badAuthor.reason);
+  const badSig = await verifyRecord({ ...good, sig: zeros64 + good.sig.slice(64) });
+  assert.equal(badSig.valid, false);
+  assert.match(badSig.reason, /small-order/, 'a weak SIGNATURE point alone was not rejected: ' + badSig.reason);
+});
+
+test('a hole or a non-record in the middle of a chain is named as exactly that', async () => {
+  // `!prev || typeof prev !== 'object'`: null passes the typeof test (typeof null is "object") and
+  // a string passes the truthiness test — each side of the OR catches what the other cannot.
+  const alice = await generateIdentity();
+  const root = await mint('root', alice);
+  const child = await fork(root, 'child', alice);
+
+  const withNull = await verifyLineage([null, child]);
+  const brk = withNull.breaks.find(b => /previous chain element is not a record/.test(b.reason));
+  assert.ok(brk, 'a null link was not flagged: ' + JSON.stringify(withNull.breaks));
+  // The break points at the record that noticed the hole — its seq must be the record's NUMBER,
+  // not the record itself. `rec && rec.seq` flipped to `||` puts the whole object in the report.
+  assert.strictEqual(brk.seq, child.seq, 'the break carried ' + typeof brk.seq + ' instead of the seq number');
+  const withString = await verifyLineage(['not a record', child]);
+  assert.ok(withString.breaks.some(b => /not a record/.test(b.reason)),
+    'a string link was not flagged: ' + JSON.stringify(withString.breaks));
+});

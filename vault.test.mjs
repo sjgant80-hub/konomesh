@@ -7,7 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Vault, memoryAdapter, encrypt, decrypt, deriveKey, randomBytes, VAULT_FORMAT } from './vault.mjs';
+import { VAULT_FORMAT, Vault, decrypt, deriveKey, encrypt, memoryAdapter, randomBytes } from './vault.mjs';
 
 const SEED = 'correct horse battery staple';
 const INVOICE = { id: 'mercor-2026-q1', gross: 5000, currency: 'GBP', desc: 'sprint invoice' };
@@ -113,3 +113,45 @@ test('a new vault mints the OWASP-2023 KDF iteration count (600k)', async () => 
 // tiny base64<->bytes helpers for the tamper test (mirror the module's portable pair)
 function atobBytes(s) { const bin = (typeof atob === 'function' ? atob(s) : Buffer.from(s, 'base64').toString('binary')); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
 function btoaBytes(u) { if (typeof btoa === 'function') { let s = ''; for (const b of u) s += String.fromCharCode(b); return btoa(s); } return Buffer.from(u).toString('base64'); }
+
+
+// ─── the boundaries the mutation gate proved nothing was holding (estate bring-up) ───
+
+test('A SEED OF EXACTLY EIGHT CHARACTERS IS ACCEPTED — the floor is where it says it is', async () => {
+  // `length < 8` flipped to `<=` refuses the shortest seed the docs allow, and the user who chose
+  // an exactly-8 passphrase is told their seed is invalid on a vault it previously created.
+  const salt = randomBytes(16);
+  await assert.doesNotReject(() => deriveKey('12345678', salt, 1000), 'an 8-char seed was refused');
+  await assert.rejects(() => deriveKey('1234567', salt, 1000), /at least 8/, 'a 7-char seed was accepted');
+});
+
+test('REOPENING USES THE ITERATIONS STORED IN THE VAULT, not whatever today\'s default is', async () => {
+  // The KDF count is stored per-vault precisely so it can be raised later without stranding old
+  // vaults. `meta.iterations || this.iterations` flipped to && derives with the CURRENT default —
+  // a different key — and every vault created under the old count fails its own seed check.
+  const adapter = memoryAdapter();
+  const v1 = new Vault({ adapter, iterations: 1000 });
+  await v1.open('a seed long enough');
+  const v2 = new Vault({ adapter });               // default iterations, same storage
+  await assert.doesNotReject(() => v2.open('a seed long enough'),
+    'a vault created at 1000 iterations could not be reopened by a client with a newer default');
+});
+
+test('EACH BROKEN IMPORT FIELD ALONE is refused as not-an-export', async () => {
+  // Three OR\'d guards: null blob, wrong format, missing meta. Flipped to ANDs, a blob that is
+  // wrong in only one way walks past the door and fails later, deep in crypto, with a worse error.
+  const adapter = memoryAdapter();
+  const v = new Vault({ adapter, iterations: 1000 });
+  await v.open('a seed long enough');
+  const blob = await v.export();
+
+  await assert.rejects(() => Vault.import(null, 'a seed long enough'), /not a konomium-vault export/);
+  await assert.rejects(() => Vault.import({ ...blob, format: 'something-else' }, 'a seed long enough'),
+    /not a konomium-vault export/, 'a wrong format alone was let in');
+  const { meta, ...noMeta } = blob;
+  await assert.rejects(() => Vault.import(noMeta, 'a seed long enough'),
+    /not a konomium-vault export/, 'a missing meta alone was let in');
+  // and the genuine article still imports
+  const back = await Vault.import(blob, 'a seed long enough');
+  assert.ok(back.opened, 'the real export failed to import');
+});

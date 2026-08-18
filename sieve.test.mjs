@@ -152,3 +152,88 @@ test('an async assessor is awaited', async () => {
   const r = await s.sift([{ content: 'x', licence: 'MIT' }]);
   assert.equal(r.kept.length, 1);
 });
+
+
+// ─── the boundaries the mutation gate proved nothing was holding ───
+// (added at the estate bring-up: seven survivors, each a real untested behaviour of the intake)
+
+test('A SCORE EXACTLY AT THE THRESHOLD IS ADMITTED — the line belongs to the pass side', async () => {
+  // The rejection reads `score < minScore`. Off by one and a candidate the config says is good
+  // enough gets binned with a reason that contradicts the config it quotes.
+  const s = new Sieve({ assess: () => 0.7, minScore: 0.7, allow: ['permissive'] });
+  const at = await s.sift([{ id: 'at', content: 'x', licence: 'MIT' }]);
+  assert.equal(at.kept.length, 1, 'a candidate exactly at minScore was rejected');
+  const under = new Sieve({ assess: () => 0.699, minScore: 0.7, allow: ['permissive'] });
+  const u = await under.sift([{ id: 'under', content: 'x', licence: 'MIT' }]);
+  assert.equal(u.rejected.length, 1, 'a candidate under the line was admitted');
+  assert.match(u.rejected[0].reason, /0.699 < 0.7/);
+});
+
+test('a candidate that is not an object goes to errored — both null and the merely-wrong', async () => {
+  const s = new Sieve({ assess: () => 1, allow: ['permissive'] });
+  const r = await s.sift([null, undefined, 'a string', 7, { id: 'ok', content: 'x', licence: 'MIT' }]);
+  assert.equal(r.errored.length, 4, 'a non-object candidate slipped past the door');
+  for (const e of r.errored) assert.match(e.reason, /not an object/);
+  assert.equal(r.kept.length, 1, 'the real candidate was lost with the rubbish');
+  assert.equal(r.summary.in, 5, 'the reconciliation lost somebody');
+});
+
+test('a poison candidate keeps what was captured before the throw, and only that', async () => {
+  // The errored record must carry id/source when they were read before the explosion, and null —
+  // never undefined, never a lie — when the explosion WAS reading them.
+  const s = new Sieve({ assess: () => { throw new Error('assessor down'); }, allow: ['permissive'] });
+  const r = await s.sift([{ id: 'seen', source: 'here', content: 'x' }]);
+  assert.equal(r.errored.length, 1);
+  assert.equal(r.errored[0].id, 'seen', 'the captured id was dropped');
+  assert.equal(r.errored[0].source, 'here', 'the captured source was dropped');
+  assert.match(r.errored[0].reason, /assessor down/);
+
+  const hostile = { get id() { throw new Error('trap'); }, content: 'x' };
+  const h = await new Sieve({ assess: () => 1, allow: ['permissive'] }).sift([hostile]);
+  assert.equal(h.errored.length, 1, 'a throwing accessor aborted the batch');
+  assert.equal(h.errored[0].id, null, 'an uncaptured id was reported as something');
+});
+
+test('A CANDIDATE WITH NO ID IS KNOWN BY ITS CONTENT-ADDRESS, never by nothing', async () => {
+  const s = new Sieve({ assess: () => 1, allow: ['permissive'] });
+  const r = await s.sift([{ content: 'anonymous thing', licence: 'MIT' }]);
+  assert.equal(r.kept.length, 1);
+  assert.equal(r.kept[0].id, r.kept[0].hash, 'a nameless candidate did not fall back to its hash');
+  assert.ok(r.kept[0].id, 'the id came out empty');
+});
+
+test('a missing licence is null on the record, not undefined and not a truthy accident', async () => {
+  const s = new Sieve({ assess: () => 1, allow: ['unknown'] });
+  const r = await s.sift([{ id: 'bare', content: 'x' }]);
+  const rec = [...r.kept, ...r.flagged].find(x => x.id === 'bare');
+  assert.ok(rec, 'the bare candidate vanished');
+  assert.strictEqual(rec.licence, null, 'a missing licence came out as ' + String(rec.licence));
+});
+
+
+test('a thrown bare string is reported as itself, not as "undefined"', async () => {
+  // The reason line is `e && e.message || e`. A string has no .message, so the fallback IS the
+  // report — break the fallback and every non-Error throw in the estate reads as "undefined".
+  const s = new Sieve({ assess: () => { throw 'the pipe burst'; }, allow: ['permissive'] });
+  const r = await s.sift([{ id: 'x', content: 'x' }]);
+  assert.match(r.errored[0].reason, /the pipe burst/, 'a bare-string throw was reported as: ' + r.errored[0].reason);
+});
+
+test('even a thrown FALSY value produces an errored record, never an aborted batch', async () => {
+  // `throw undefined` is rare and real. The guard must survive reading .message off it — one
+  // flipped operator turns this into a TypeError that escapes the catch and kills the whole sift.
+  const s = new Sieve({ assess: () => { throw undefined; }, allow: ['permissive'] });
+  const r = await s.sift([{ id: 'x', content: 'x' }, { id: 'y', content: 'y' }]);
+  assert.equal(r.errored.length, 2, 'a falsy throw aborted the batch instead of erroring the candidate');
+  assert.match(r.errored[0].reason, /processing threw/);
+});
+
+
+test('THE CONTENT ADDRESS IS THE IDENTITY CONTRACT — its exact value is pinned', () => {
+  // Everything dedupes and clusters by this hash. Any change to its loop or its primes is a new
+  // address space: every stored record silently stops matching itself on the next run. One extra
+  // iteration XORs NaN (a no-op) then multiplies once more — a consistent, wrong, new identity.
+  assert.equal(contentHash('konomi'), 'd4b0354d21b1610baff26bb8a3d6d289');
+  assert.equal(contentHash(''), contentHash(''), 'the empty address is not stable');
+  assert.notEqual(contentHash('a'), contentHash('b'));
+});
